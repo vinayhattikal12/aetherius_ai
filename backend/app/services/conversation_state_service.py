@@ -250,10 +250,10 @@ class ConversationStateService:
         elif "yesterday" in lower:
             constraints["temporal"] = "yesterday"
 
-        # Market / Finance
-        if "india" in lower:
+        # Market / Finance / Geographic Region
+        if re.search(r"\b(india|indian)\b", lower):
             constraints["location"] = "India"
-        elif "us" in lower or "usa" in lower or "nasdaq" in lower or "nyse" in lower:
+        elif re.search(r"\b(united states|u\.s\.a\.?|usa|nasdaq|nyse)\b", lower):
             constraints["location"] = "US"
 
         if "small cap" in lower or "small-cap" in lower:

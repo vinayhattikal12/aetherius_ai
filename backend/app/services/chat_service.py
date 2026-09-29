@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import uuid
 from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +37,31 @@ class ChatService:
     task planning, routing, tool & evidence grounding, model execution,
     closed-loop answer validation/repair, and atomic state persistence.
     """
+
+    @staticmethod
+    def clean_model_response(text: str) -> str:
+        """Strips accidental prompt header echoes, template debug markers, and trailing boilerplate from user-facing response."""
+        if not text:
+            return ""
+        cleaned = text.strip()
+        header_patterns = [
+            r"^(Active\s+Conversation\s+Topic|Active\s+Topic|Conversation\s+Topic):\s*[^\n]*\n*",
+            r"^(Turn\s+Relation\s+Mode|Turn\s+Type):\s*[^\n]*\n*",
+            r"^(Response|Answer):\s*\n*",
+            r"^(Location\s+Context):\s*[^\n]*\n*",
+            r"^(Relevant\s+Information):\s*[^\n]*\n*",
+            r"^(RAG\s+Knowledge(\s+Enabled|\s+Disabled)?):\s*[^\n]*\n*",
+            r"^(Technical\s+Deep\s+Dive|Solution):\s*\n*",
+        ]
+        for _ in range(5):
+            matched = False
+            for pat in header_patterns:
+                if re.match(pat, cleaned, flags=re.IGNORECASE):
+                    cleaned = re.sub(pat, "", cleaned, count=1, flags=re.IGNORECASE).strip()
+                    matched = True
+            if not matched:
+                break
+        return cleaned
 
     @staticmethod
     async def process_chat_completion(
@@ -374,6 +400,7 @@ class ChatService:
         await db.refresh(user_msg)
 
         # Save Assistant Message
+        assistant_content = ChatService.clean_model_response(assistant_content)
         assistant_metadata = {
             "rag_applied": rag_applied,
             "web_searched": web_searched,
@@ -674,6 +701,7 @@ class ChatService:
             yield f"data: {json.dumps({'type': 'token', 'token': err_msg})}\n\n"
 
         # Save Assistant Message
+        cleaned_response_text = ChatService.clean_model_response(full_response_text)
         assistant_metadata = {
             "rag_applied": rag_applied,
             "web_searched": web_searched,
@@ -688,10 +716,10 @@ class ChatService:
         assistant_msg = Message(
             conversation_id=conversation.id,
             role="assistant",
-            content=full_response_text,
+            content=cleaned_response_text,
             model_name=actual_model_name,
             citations=[c.model_dump() for c in citations],
-            token_count=len(full_response_text.split()),
+            token_count=len(cleaned_response_text.split()),
             extra_metadata=assistant_metadata
         )
         db.add(assistant_msg)
@@ -710,10 +738,10 @@ class ChatService:
                 entities=ConversationStateService.extract_entities(request.message),
                 references=resolved_task.resolved_references,
                 constraints=resolved_task.accumulated_constraints,
-                assistant_summary=full_response_text[:300]
+                assistant_summary=cleaned_response_text[:300]
             )
         except Exception as state_err:
             logger.warning(f"State update notice: {state_err}")
 
         # Send SSE done event
-        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': full_response_text, 'conversation_id': conversation.id, 'model_used': actual_model_name, 'citations': [c.model_dump() for c in citations]})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': cleaned_response_text, 'conversation_id': conversation.id, 'model_used': actual_model_name, 'citations': [c.model_dump() for c in citations]})}\n\n"

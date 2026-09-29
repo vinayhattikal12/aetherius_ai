@@ -50,13 +50,12 @@ class ContextEngine:
             system_sections.append(system_instruction)
 
         base_directive = (
-            f"You are Aetherius AI, an advanced AI Operating Environment in the '{workspace_name}' workspace.\n"
-            "CORE OPERATIONAL DIRECTIVES:\n"
-            "- CONTINUOUS REASONING: Maintain complete conversational awareness. When the user refines, filters, or follows up on previous turns, directly continue from the active discussion without requesting restatements.\n"
-            "- DYNAMIC CALIBRATION: Match answer depth to the query's complexity. Deliver crisp, concise answers for quick questions and thorough, structured, header-organized deep dives for complex topics.\n"
-            "- EVIDENCE-BACKED FACTUALITY: Strictly base assertions on provided document excerpts, verified web search results, or validated tool observations. Never hallucinate data.\n"
-            "- CONCRETE EXAMPLES: Illustrate concepts with clear, runnable code snippets or structured analogies whenever applicable.\n"
-            "- CITATIONS: When external knowledge or live search results are provided, cite sources accurately."
+            f"You are Aetherius AI, an intelligent, helpful, and natural AI assistant in the '{workspace_name}' workspace.\n"
+            "RESPONSE GUIDELINES:\n"
+            "- NATURAL CONVERSATIONAL RESPONSE: Output only the direct, helpful answer to the user's message. Never output internal headers, debug labels, or template headings like 'Active Conversation Topic:', 'Location Context:', 'Response:', 'Relevant Information:', 'Next Steps:', 'RAG Knowledge:', 'Solution & Technical Deep Dive:', or 'Turn Relation:'.\n"
+            "- DYNAMIC CALIBRATION: Give concise answers for simple questions and thorough, structured responses with markdown or code blocks for complex tasks.\n"
+            "- NO ASSUMED LOCATION: Never mention geographical location or local context unless the user explicitly asks about location-specific details.\n"
+            "- FACTUAL & GROUNDED: Use any provided knowledge seamlessly without announcing internal retrieval mechanisms."
         )
         system_sections.append(base_directive)
 
@@ -73,31 +72,31 @@ class ContextEngine:
             last_goal = conversation_state.get("last_user_goal")
 
             if topic:
-                state_lines.append(f"- Active Conversation Topic: {topic}")
+                state_lines.append(f"Current Discussion Topic: {topic}")
             if subtopics:
-                state_lines.append(f"- Recent Subtopics: {', '.join(subtopics[-4:])}")
+                state_lines.append(f"Recent Topics: {', '.join(subtopics[-4:])}")
             if last_goal and last_goal != topic:
-                state_lines.append(f"- Immediate Prior Goal: {last_goal}")
+                state_lines.append(f"Prior Goal: {last_goal}")
             if references:
                 ref_str = ", ".join(f"'{k}' -> {v}" for k, v in list(references.items())[:6] if k not in ["subject"])
                 if ref_str:
-                    state_lines.append(f"- Resolved Reference Context: [{ref_str}]")
+                    state_lines.append(f"Resolved References: [{ref_str}]")
 
             # Turn type specific guidance
             turn_guidance = {
-                "CORRECTION": "The user is correcting a detail or misunderstanding. Acknowledge directly, adopt the correction smoothly, and provide the revised solution without excessive apologies.",
-                "MODIFICATION": "The user is modifying the previous response (e.g. changing language, adding constraints, refining performance). Apply modifications directly to the existing solution.",
-                "EXPANSION": "The user wants more depth, additional examples, or edge cases. Elaborate thoroughly on the current topic without repeating the basic introduction.",
-                "COMPARISON": "The user is requesting a comparative evaluation. Provide a clear structured trade-off breakdown covering key decision criteria (performance, complexity, ergonomics).",
-                "CLARIFICATION": "The user is seeking clarification or reasoning on a specific aspect. Provide a clear, intuitive conceptual explanation.",
-                "CONTINUATION": "The user wants to proceed to the next step or continue generation. Pick up seamlessly where the previous turn ended.",
-                "FOLLOW_UP": "The user is following up within the active discussion context. Maintain continuity.",
+                "CORRECTION": "The user is correcting a detail. Directly provide the revised answer without excessive apologies.",
+                "MODIFICATION": "The user is modifying the previous response. Apply modifications directly.",
+                "EXPANSION": "The user wants more depth or examples. Elaborate directly.",
+                "COMPARISON": "The user is comparing options. Provide a clear trade-off comparison.",
+                "CLARIFICATION": "The user is seeking clarification. Explain intuitively.",
+                "CONTINUATION": "The user wants to continue. Pick up seamlessly where the previous turn ended.",
+                "FOLLOW_UP": "The user is following up within the active discussion.",
             }
             if turn_type in turn_guidance:
-                state_lines.append(f"- Turn Relation Mode ({turn_type}): {turn_guidance[turn_type]}")
+                state_lines.append(f"Context Guidance: {turn_guidance[turn_type]}")
 
             if state_lines:
-                system_sections.append("### [CONVERSATION STATE & TURN INTELLIGENCE]:\n" + "\n".join(state_lines))
+                system_sections.append("[CONVERSATION CONTEXT (Internal Guidance - Do Not Echo)]:\n" + "\n".join(state_lines))
 
         # 3. User & Environment Context Layer
         env_lines = []
@@ -109,16 +108,16 @@ class ContextEngine:
                 env_lines.append(f"- Preference ({k}): {v}")
 
         if env_lines:
-            system_sections.append(f"### [ENVIRONMENT & USER CONTEXT]:\n" + "\n".join(env_lines))
+            system_sections.append(f"[ENVIRONMENT & USER CONTEXT]:\n" + "\n".join(env_lines))
 
         # 4. Active Task & Project Context Layer
         if task_context:
             task_desc = f"Objective: {task_context.get('objective', 'Active Task')}\nStatus: {task_context.get('status', 'running')}\nCurrent Step: {task_context.get('current_step', 'in progress')}"
-            system_sections.append(f"### [ACTIVE TASK CONTEXT]:\n{task_desc}")
+            system_sections.append(f"[ACTIVE TASK CONTEXT]:\n{task_desc}")
 
         if project_context:
             proj_desc = f"Project: {project_context.get('name', 'Active Workspace')}\nActive Files: {project_context.get('files', [])}"
-            system_sections.append(f"### [PROJECT CONTEXT]:\n{proj_desc}")
+            system_sections.append(f"[PROJECT CONTEXT]:\n{proj_desc}")
 
         # 5. Memory Context Layer (Semantic & Episodic)
         if memories and len(memories) > 0:
@@ -128,15 +127,14 @@ class ContextEngine:
                 m_content = m.content if hasattr(m, "content") else str(m)
                 mem_lines.append(f"- [{m_type}] {m_content}")
             system_sections.append(
-                f"### [USER PROFILE & MEMORY RECALL]:\n"
+                f"[USER PROFILE & MEMORY RECALL (Apply silently without announcing)]:\n"
                 + "\n".join(mem_lines)
-                + "\n(Seamlessly adapt tone, constraints, and preferences without explicitly announcing recall unless asked.)"
             )
 
         # 6. Tool Context Layer
         if tool_definitions and len(tool_definitions) > 0:
             tool_summaries = [f"- `{t.get('name')}`: {t.get('description')}" for t in tool_definitions]
-            system_sections.append(f"### [AVAILABLE SANDBOX TOOLS]:\n" + "\n".join(tool_summaries))
+            system_sections.append(f"[AVAILABLE SANDBOX TOOLS]:\n" + "\n".join(tool_summaries))
 
         full_system_prompt = "\n\n".join(system_sections)
         system_tokens = cls.estimate_tokens(full_system_prompt)
@@ -148,8 +146,8 @@ class ContextEngine:
             rag_parts = []
             for chunk, score in rag_chunks:
                 fn = chunk.chunk_metadata.get("filename", "Document")
-                rag_parts.append(f"[Source: {fn} (similarity: {score})]:\n{chunk.content}")
-            rag_text = "Retrieved Document Knowledge:\n" + "\n\n".join(rag_parts)
+                rag_parts.append(f"[Source Document: {fn}]:\n{chunk.content}")
+            rag_text = "Referenced Knowledge Content:\n" + "\n\n".join(rag_parts)
             rag_tokens = cls.estimate_tokens(rag_text)
 
         # 7. Web Intelligence Context
@@ -162,14 +160,16 @@ class ContextEngine:
                 if w.get("deep_content"):
                     part += f"\n    Full Article Excerpt: {w.get('deep_content')}"
                 web_parts.append(part)
-            web_text = "### [LIVE REAL-TIME WEB SEARCH & DEEP RETRIEVAL DATA]:\n" + "\n\n".join(web_parts)
+            web_text = "[LIVE WEB SEARCH RESULTS]:\n" + "\n\n".join(web_parts)
             web_tokens = cls.estimate_tokens(web_text)
 
         # 8. Accumulated Constraints Injection
         constraint_text = ""
         if accumulated_constraints:
-            c_lines = [f"- {k.replace('_', ' ').title()}: `{v}`" for k, v in accumulated_constraints.items()]
-            constraint_text = "### [ACCUMULATED MULTI-TURN CONSTRAINTS]:\n" + "\n".join(c_lines)
+            valid_c = {k: v for k, v in accumulated_constraints.items() if k != "location" or v != "US"}
+            if valid_c:
+                c_lines = [f"- {k.replace('_', ' ').title()}: `{v}`" for k, v in valid_c.items()]
+                constraint_text = "[USER CONSTRAINTS (Apply silently)]:\n" + "\n".join(c_lines)
 
         # 9. Fit Conversation History within remaining token budget
         user_msg_tokens = cls.estimate_tokens(current_user_message)

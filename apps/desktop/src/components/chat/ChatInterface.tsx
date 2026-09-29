@@ -1083,8 +1083,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </div>
           )}
 
-          {/* Active Feature Indicators (Web, RAG, Image Gen) */}
-          {(useWebSearch || useImageGen || !useRAG) && (
+          {/* Active Feature Indicators (Web, Image Gen) */}
+          {(useWebSearch || useImageGen) && (
             <div className="flex items-center gap-2 mb-2 px-1 text-[11px]">
               {useWebSearch && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#016A71]/25 text-[#34888D] border border-[#016A71]/40">
@@ -1094,11 +1094,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               {useImageGen && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40">
                   <Wand2 className="w-3 h-3" /> Image / Diagram Mode Active
-                </span>
-              )}
-              {!useRAG && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40">
-                  <Database className="w-3 h-3" /> RAG Knowledge Disabled
                 </span>
               )}
             </div>
