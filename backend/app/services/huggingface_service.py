@@ -299,50 +299,93 @@ FEATURED_HF_MODELS = [
 
 FEATURED_HF_DATASETS = [
     {
-        "repo_id": "Salesforce/dialogstudio",
-        "author": "Salesforce",
-        "dataset_name": "DialogStudio Sales & Support",
-        "description": "Extensive multi-turn enterprise conversations, B2B negotiation, and customer support transcripts.",
-        "downloads": 38000,
-        "likes": 410,
-        "category": "Sales & Support",
-        "tags": ["sales", "conversations", "b2b", "support"],
+        "repo_id": "HuggingFaceFW/fineweb-edu",
+        "author": "HuggingFaceFW",
+        "dataset_name": "FineWeb-Edu High-Quality Educational Web",
+        "description": "State-of-the-art 1.3T token dataset curated for synthetic data generation, pre-training, and academic distillation.",
+        "downloads": 480000,
+        "likes": 5200,
+        "category": "Pre-Training & Education",
+        "tags": ["pretraining", "educational", "synthetic", "tokens"],
     },
     {
-        "repo_id": "FinGPT/fingpt-sentiment-train",
-        "author": "FinGPT",
-        "dataset_name": "FinGPT Financial Reports & News",
-        "description": "Financial market reports, stock analysis statements, 10-K filings, and balance sheet sentiment.",
-        "downloads": 56000,
-        "likes": 820,
-        "category": "Finance",
-        "tags": ["finance", "stocks", "earnings", "reports"],
+        "repo_id": "teknium/OpenHermes-2.5",
+        "author": "teknium",
+        "dataset_name": "OpenHermes 2.5 Instruction Dataset",
+        "description": "1 million high-quality multi-turn chat instructions covering coding, reasoning, roleplay, and creative writing.",
+        "downloads": 320000,
+        "likes": 3400,
+        "category": "General & Instruction",
+        "tags": ["chat", "instructions", "multi-turn", "gpt4-distill"],
+    },
+    {
+        "repo_id": "openai/gsm8k",
+        "author": "openai",
+        "dataset_name": "GSM8K Grade School Math Reasoning",
+        "description": "8,500 high-quality multi-step mathematical word problems with detailed reasoning traces and solutions.",
+        "downloads": 290000,
+        "likes": 2800,
+        "category": "Math & Reasoning",
+        "tags": ["math", "reasoning", "chain-of-thought", "gsm8k"],
     },
     {
         "repo_id": "bigcode/the-stack-smol",
         "author": "BigCode",
         "dataset_name": "The Stack Code & Documentation",
-        "description": "Curated clean code snippets, unit tests, and system architecture guides across 30+ languages.",
+        "description": "Curated clean code snippets, unit tests, and system architecture guides across 30+ programming languages.",
         "downloads": 120000,
         "likes": 1350,
-        "category": "Developer",
-        "tags": ["code", "python", "typescript", "architecture"],
+        "category": "Developer & Code",
+        "tags": ["code", "python", "typescript", "architecture", "rust"],
+    },
+    {
+        "repo_id": "FinGPT/fingpt-sentiment-train",
+        "author": "FinGPT",
+        "dataset_name": "FinGPT Financial Reports & Market Sentiment",
+        "description": "Financial market reports, stock analysis statements, 10-K filings, earnings calls, and balance sheet sentiment.",
+        "downloads": 56000,
+        "likes": 820,
+        "category": "Finance & Economics",
+        "tags": ["finance", "stocks", "earnings", "reports", "sec-filings"],
+    },
+    {
+        "repo_id": "Salesforce/dialogstudio",
+        "author": "Salesforce",
+        "dataset_name": "DialogStudio Sales & Customer Support",
+        "description": "Extensive multi-turn enterprise conversations, B2B negotiation, customer support transcripts, and task completion.",
+        "downloads": 38000,
+        "likes": 410,
+        "category": "Sales & Support",
+        "tags": ["sales", "conversations", "b2b", "support", "dialog"],
     },
     {
         "repo_id": "m-a-p/CodeFeedback-Filtered-Instruction",
         "author": "m-a-p",
-        "dataset_name": "HR & Workplace Policies Q&A",
-        "description": "Standard operating procedures, workplace conduct, recruitment rubrics, and organizational guides.",
+        "dataset_name": "Code Feedback & Human Review Rubrics",
+        "description": "Code review iterations, debugging explanations, and automated security fixes across software development workflows.",
         "downloads": 24000,
         "likes": 290,
-        "category": "HR & Operations",
-        "tags": ["hr", "operations", "policies", "recruiting"],
+        "category": "Developer & Code",
+        "tags": ["code-review", "feedback", "debugging", "security"],
     },
+    {
+        "repo_id": "hotpot_qa",
+        "author": "hotpotqa",
+        "dataset_name": "HotpotQA Multi-Hop RAG Benchmark",
+        "description": "113k Wikipedia-based question-answer pairs requiring multi-hop reasoning and document grounding for RAG systems.",
+        "downloads": 95000,
+        "likes": 980,
+        "category": "RAG & Search",
+        "tags": ["rag", "multi-hop", "search", "fact-checking", "qa"],
+    }
 ]
 
 
 class HuggingFaceHubService:
     """Service to interact dynamically with Hugging Face Hub for models, datasets, and smart upgrades."""
+    _last_synced_at: Optional[str] = None
+    _cached_daily_models: List[HuggingFaceModelCard] = []
+    _cached_daily_datasets: List[HuggingFaceDatasetCard] = []
 
     @staticmethod
     def _parse_params_from_id(repo_id: str) -> float:
@@ -693,3 +736,48 @@ class HuggingFaceHubService:
                     )
 
         return suggestions
+
+    @classmethod
+    async def sync_daily_catalog(
+        cls,
+        profile: Optional[HardwareProfile] = None,
+    ) -> Dict[str, Any]:
+        """
+        Synchronize latest daily releases, model versions, and trending datasets from Hugging Face Hub.
+        Updates internal cache and timestamp.
+        """
+        from datetime import datetime, timezone
+        trending_models = await cls.fetch_trending_models(profile=profile, limit=20)
+        popular_datasets = await cls.fetch_popular_datasets(limit=16)
+        
+        cls._cached_daily_models = trending_models
+        cls._cached_daily_datasets = popular_datasets
+        cls._last_synced_at = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "status": "success",
+            "message": "Daily open-source models, versions, and datasets synced successfully.",
+            "last_synced_at": cls._last_synced_at,
+            "models_count": len(trending_models),
+            "datasets_count": len(popular_datasets),
+        }
+
+    @classmethod
+    async def get_daily_feed(
+        cls,
+        profile: Optional[HardwareProfile] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get daily updated open-source catalog feed.
+        If cache is empty, triggers initial sync.
+        """
+        if not cls._cached_daily_models or not cls._last_synced_at:
+            await cls.sync_daily_catalog(profile=profile)
+        
+        return {
+            "last_updated": cls._last_synced_at,
+            "models": cls._cached_daily_models,
+            "datasets": cls._cached_daily_datasets,
+            "trending_count": len(cls._cached_daily_models),
+        }
+

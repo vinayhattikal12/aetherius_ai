@@ -107,6 +107,24 @@ async def search_huggingface_datasets(
     return await HuggingFaceHubService.fetch_popular_datasets(query=q, limit=limit)
 
 
+@router.get("/daily-feed")
+async def get_daily_open_source_feed():
+    """Returns the daily updated open-source models, releases, and datasets feed."""
+    profile = HardwareDetector.get_hardware_profile()
+    return await HuggingFaceHubService.get_daily_feed(profile=profile)
+
+
+@router.post("/sync-daily")
+async def sync_daily_open_source_models(
+    db: AsyncSession = Depends(get_db)
+):
+    """Force an immediate live synchronization with Hugging Face Hub and Ollama for newly released models/versions."""
+    profile = HardwareDetector.get_hardware_profile()
+    # Also ensure default models and packages in DB are in sync
+    await ModelRegistryService.seed_default_models(db)
+    return await HuggingFaceHubService.sync_daily_catalog(profile=profile)
+
+
 @router.get("/upgrade-suggestions", response_model=List[ModelUpgradeSuggestion])
 async def get_model_upgrade_suggestions(
     db: AsyncSession = Depends(get_db)

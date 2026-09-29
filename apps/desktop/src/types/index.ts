@@ -139,6 +139,13 @@ export interface ModelUpgradeSuggestion {
   compatibility: CompatibilityResult;
 }
 
+export interface DailyOpenSourceFeed {
+  last_updated: string;
+  models: HuggingFaceModelCard[];
+  datasets: HuggingFaceDatasetCard[];
+  trending_count: number;
+}
+
 export interface SmartSwapRequest {
   old_model_id: string;
   new_repo_id: string;
@@ -182,6 +189,7 @@ export interface UserSettingsResponse {
   auto_routing_enabled: boolean;
   telemetry_enabled: boolean;
   onboarding_completed: boolean;
+  custom_settings?: Record<string, any>;
 }
 
 export interface ChatAttachment {

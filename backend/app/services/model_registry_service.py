@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -28,6 +29,30 @@ DEFAULT_MODELS = [
         "embedding_capable": False,
         "category": "Fast",
         "description": "Ultra-fast, efficient small language model for quick everyday queries and lightweight laptops.",
+        "is_local": True,
+        "is_installed": False,
+        "is_recommended": True,
+    },
+    {
+        "name": "qwen2.5-coder:1.5b",
+        "display_name": "Qwen 2.5 Coder 1.5B (Edge)",
+        "provider": "ollama",
+        "model_family": "qwen",
+        "parameters_b": 1.5,
+        "quantization": "Q4_K_M",
+        "context_size": 8192,
+        "min_ram_gb": 4.0,
+        "min_vram_gb": 1.5,
+        "recommended_vram_gb": 2.0,
+        "cpu_compatible": True,
+        "gpu_compatible": True,
+        "vision_capable": False,
+        "coding_capable": True,
+        "reasoning_capable": False,
+        "tool_calling_capable": True,
+        "embedding_capable": False,
+        "category": "Fast",
+        "description": "Ultra-lightweight inline code generator and auto-completer designed for background IDE tasks.",
         "is_local": True,
         "is_installed": False,
         "is_recommended": True,
@@ -76,6 +101,30 @@ DEFAULT_MODELS = [
         "embedding_capable": False,
         "category": "Reasoning",
         "description": "Powerful chain-of-thought reasoning model for complex math, science, and multi-step logical tasks.",
+        "is_local": True,
+        "is_installed": False,
+        "is_recommended": True,
+    },
+    {
+        "name": "qwen2.5-coder:14b",
+        "display_name": "Qwen 2.5 Coder 14B (Heavyweight)",
+        "provider": "ollama",
+        "model_family": "qwen",
+        "parameters_b": 14.7,
+        "quantization": "Q4_K_M",
+        "context_size": 16384,
+        "min_ram_gb": 16.0,
+        "min_vram_gb": 10.0,
+        "recommended_vram_gb": 12.0,
+        "cpu_compatible": True,
+        "gpu_compatible": True,
+        "vision_capable": False,
+        "coding_capable": True,
+        "reasoning_capable": True,
+        "tool_calling_capable": True,
+        "embedding_capable": False,
+        "category": "Coding",
+        "description": "Enterprise-grade high-precision coding model with deep repo comprehension and architectural refactoring.",
         "is_local": True,
         "is_installed": False,
         "is_recommended": True,
@@ -156,40 +205,67 @@ DEFAULT_MODELS = [
 
 DEFAULT_PACKAGES = [
     {
-        "name": "General AI Package",
-        "slug": "general-package",
-        "description": "A well-balanced foundation for everyday productivity, reading, summaries, and chat.",
-        "target_audience": "General Users, Professionals, Students",
-        "recommended_model_ids": ["llama3.2:3b", "nomic-embed-text"],
-        "estimated_storage_gb": 3.0,
-        "required_ram_gb": 8.0,
-    },
-    {
-        "name": "Developer Package",
-        "slug": "developer-package",
-        "description": "Specialized for full-stack programming, automated refactoring, and AI agent workflows.",
-        "target_audience": "Developers, Software Engineers, DevOps",
+        "name": "Full-Stack Developer & Agent Suite",
+        "slug": "developer-suite",
+        "description": "Production-grade coding, automatic debugging, tool calling, unit test generation, and pgvector RAG.",
+        "target_audience": "Software Engineers, Full-Stack Developers, DevOps & AI Engineers",
         "recommended_model_ids": ["qwen2.5-coder:7b", "deepseek-r1:8b", "nomic-embed-text"],
         "estimated_storage_gb": 10.5,
         "required_ram_gb": 16.0,
     },
     {
-        "name": "Student & Research Package",
-        "slug": "student-package",
-        "description": "Optimized for document reading, thesis study, quiz generation, and deep reasoning.",
-        "target_audience": "Students, Academics, Researchers",
-        "recommended_model_ids": ["llama3.2:3b", "deepseek-r1:8b", "nomic-embed-text"],
-        "estimated_storage_gb": 7.5,
+        "name": "Autonomous Research & Deep Reasoning Suite",
+        "slug": "research-reasoning-suite",
+        "description": "Chain-of-thought mathematical proofs, deep logical analysis, thesis synthesis, and fast drafting.",
+        "target_audience": "Researchers, Academics, Analysts, Data Scientists",
+        "recommended_model_ids": ["deepseek-r1:8b", "llama3.2:3b", "nomic-embed-text"],
+        "estimated_storage_gb": 8.5,
         "required_ram_gb": 12.0,
     },
     {
-        "name": "Enterprise & Cloud Package",
-        "slug": "enterprise-package",
-        "description": "Full-spectrum intelligence combining local private privacy models with high-power cloud APIs.",
-        "target_audience": "Companies, Finance, HR, Executive Teams",
-        "recommended_model_ids": ["mistral:7b", "claude-3-7-sonnet", "nomic-embed-text"],
-        "estimated_storage_gb": 5.0,
+        "name": "Lightweight Laptop AI Starter Pack",
+        "slug": "starter-pack",
+        "description": "Ultra-fast response times and minimal battery consumption for laptops, everyday writing, and quick coding.",
+        "target_audience": "Students, Everyday Users, Mobile & Laptop Professionals",
+        "recommended_model_ids": ["llama3.2:3b", "qwen2.5-coder:1.5b", "nomic-embed-text"],
+        "estimated_storage_gb": 4.5,
+        "required_ram_gb": 8.0,
+    },
+    {
+        "name": "Data Science, Analytics & SQL Suite",
+        "slug": "data-science-suite",
+        "description": "Specialized for tabular datasets, SQL query optimization, Python pandas scripting, and statistical summaries.",
+        "target_audience": "Data Analysts, BI Engineers, Quantitative Researchers",
+        "recommended_model_ids": ["qwen2.5-coder:7b", "deepseek-r1:8b", "nomic-embed-text"],
+        "estimated_storage_gb": 10.0,
         "required_ram_gb": 16.0,
+    },
+    {
+        "name": "Heavyweight Workstation Engineering Pack",
+        "slug": "workstation-engineering-pack",
+        "description": "Maximum accuracy 14B parameter coding powerhouse paired with DeepSeek R1 reasoning for desktop workstations.",
+        "target_audience": "Senior Architects, Desktop Workstations, 32GB+ RAM Systems",
+        "recommended_model_ids": ["qwen2.5-coder:14b", "deepseek-r1:8b", "nomic-embed-text"],
+        "estimated_storage_gb": 18.5,
+        "required_ram_gb": 24.0,
+    },
+    {
+        "name": "Multimodal Vision & Realtime Suite",
+        "slug": "multimodal-vision-suite",
+        "description": "High-speed document parsing, image analysis, UI design code generation, and semantic vector indexing.",
+        "target_audience": "UI/UX Designers, Product Managers, Content Creators",
+        "recommended_model_ids": ["llama3.2:3b", "qwen2.5-coder:7b", "nomic-embed-text"],
+        "estimated_storage_gb": 9.0,
+        "required_ram_gb": 16.0,
+    },
+    {
+        "name": "Enterprise Hybrid Cloud & Local Privacy Suite",
+        "slug": "enterprise-privacy-suite",
+        "description": "100% offline local privacy for proprietary docs combined with Claude 3.7 Sonnet cloud scale when needed.",
+        "target_audience": "Enterprises, Legal, Finance & Security-conscious Organizations",
+        "recommended_model_ids": ["llama3.2:3b", "claude-3-7-sonnet", "nomic-embed-text"],
+        "estimated_storage_gb": 4.0,
+        "required_ram_gb": 8.0,
     }
 ]
 
@@ -197,20 +273,42 @@ DEFAULT_PACKAGES = [
 class ModelRegistryService:
     @staticmethod
     async def seed_default_models(db: AsyncSession) -> None:
-        """Seed default model registry and packages if empty."""
+        """Seed and synchronize default models and curated packages into PostgreSQL."""
+        # Synchronize Models
         result = await db.execute(select(ModelRegistry))
-        existing = result.scalars().all()
-        if not existing:
-            for m_data in DEFAULT_MODELS:
+        existing_models = {m.name: m for m in result.scalars().all()}
+        
+        for m_data in DEFAULT_MODELS:
+            name = m_data["name"]
+            if name not in existing_models:
                 model = ModelRegistry(**m_data)
                 db.add(model)
-            
-            for p_data in DEFAULT_PACKAGES:
-                package = ModelPackage(**p_data)
-                db.add(package)
-            
+        
+        # Synchronize Curated Packages
+        pkg_result = await db.execute(select(ModelPackage))
+        existing_pkgs = {p.slug: p for p in pkg_result.scalars().all()}
+        
+        for p_data in DEFAULT_PACKAGES:
+            slug = p_data["slug"]
+            if slug not in existing_pkgs:
+                pkg = ModelPackage(**p_data)
+                db.add(pkg)
+            else:
+                # Update existing package attributes to latest curated definitions
+                pkg = existing_pkgs[slug]
+                pkg.name = p_data["name"]
+                pkg.description = p_data["description"]
+                pkg.target_audience = p_data["target_audience"]
+                pkg.recommended_model_ids = p_data["recommended_model_ids"]
+                pkg.estimated_storage_gb = p_data["estimated_storage_gb"]
+                pkg.required_ram_gb = p_data["required_ram_gb"]
+        
+        try:
             await db.commit()
-            logger.info("Default AI models and model packages seeded into PostgreSQL.")
+            logger.info("Default AI models and curated model packages synchronized in PostgreSQL.")
+        except Exception as e:
+            await db.rollback()
+            logger.warn(f"Notice syncing model registry defaults: {e}")
 
     @staticmethod
     async def get_models(db: AsyncSession, profile: Optional[HardwareProfile] = None) -> List[ModelResponse]:
@@ -266,17 +364,35 @@ class ModelRegistryService:
                 except Exception:
                     await db.rollback()
         
+        # Query user settings for saved cloud API keys
+        from backend.app.models.settings import UserSettings
+        settings_res = await db.execute(select(UserSettings))
+        user_settings = settings_res.scalars().first()
+        custom_cfg = user_settings.custom_settings if user_settings else {}
+
+        has_anthropic_key = bool(os.getenv("ANTHROPIC_API_KEY") or custom_cfg.get("anthropic_api_key"))
+        has_openai_key = bool(os.getenv("OPENAI_API_KEY") or custom_cfg.get("openai_api_key"))
+        has_groq_key = bool(os.getenv("GROQ_API_KEY") or custom_cfg.get("groq_api_key"))
+
         responses: List[ModelResponse] = []
         for m in models:
-            # If Ollama is available, keep is_installed synchronized with actual disk tags
-            if m.provider == "ollama" and installed_tags:
-                tag_matches = any(t == m.name or t.startswith(m.name.split(':')[0]) for t in installed_tags)
-                if m.is_installed != tag_matches:
+            # For local models, synchronize with verified local Ollama downloads
+            if m.is_local:
+                if installed_tags:
+                    tag_matches = any(t == m.name or t.startswith(m.name.split(':')[0]) for t in installed_tags)
                     m.is_installed = tag_matches
-                    try:
-                        await db.commit()
-                    except Exception:
-                        pass
+                else:
+                    m.is_installed = False
+            else:
+                # For cloud models, only marked installed/ready if user has entered their API key in Model Registry
+                if "anthropic" in m.provider.lower() or "claude" in m.name.lower():
+                    m.is_installed = has_anthropic_key
+                elif "openai" in m.provider.lower() or "gpt" in m.name.lower():
+                    m.is_installed = has_openai_key
+                elif "groq" in m.provider.lower():
+                    m.is_installed = has_groq_key
+                else:
+                    m.is_installed = has_anthropic_key or has_openai_key or has_groq_key
 
             compat = None
             if profile:

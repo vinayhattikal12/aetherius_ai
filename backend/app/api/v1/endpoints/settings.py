@@ -68,6 +68,30 @@ async def update_settings(
         settings = result.scalars().first()
     
     update_data = updates.model_dump(exclude_unset=True)
+    if "custom_settings" in update_data and update_data["custom_settings"]:
+        existing_custom = settings.custom_settings or {}
+        merged_custom = {**existing_custom, **update_data["custom_settings"]}
+        settings.custom_settings = merged_custom
+
+        # Apply cloud API keys to environment variables and live provider instance
+        import os
+        from backend.app.services.providers.model_manager import model_manager
+
+        if merged_custom.get("anthropic_api_key"):
+            os.environ["ANTHROPIC_API_KEY"] = merged_custom["anthropic_api_key"]
+            model_manager.cloud.anthropic_key = merged_custom["anthropic_api_key"]
+        if merged_custom.get("openai_api_key"):
+            os.environ["OPENAI_API_KEY"] = merged_custom["openai_api_key"]
+            model_manager.cloud.openai_key = merged_custom["openai_api_key"]
+        if merged_custom.get("groq_api_key"):
+            os.environ["GROQ_API_KEY"] = merged_custom["groq_api_key"]
+            model_manager.cloud.groq_key = merged_custom["groq_api_key"]
+        if merged_custom.get("hf_token"):
+            os.environ["HF_TOKEN"] = merged_custom["hf_token"]
+            model_manager.cloud.hf_key = merged_custom["hf_token"]
+
+        del update_data["custom_settings"]
+
     for key, val in update_data.items():
         setattr(settings, key, val)
     

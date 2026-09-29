@@ -27,6 +27,14 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Plus,
+  Mic,
+  MicOff,
+  AudioWaveform,
+  Search,
+  Cpu,
+  Cloud,
+  Wand2,
 } from 'lucide-react';
 
 interface AssistantMessageBodyProps {
@@ -66,7 +74,7 @@ const AssistantMessageBody: React.FC<AssistantMessageBodyProps> = ({ content, on
   return (
     <div className="space-y-3">
       {thinking !== null && (
-        <div className="rounded-[11px] border border-[#016A71]/35 bg-[#016A71]/10 overflow-hidden text-xs">
+        <div className="rounded-[12px] border border-[#016A71]/35 bg-[#016A71]/10 overflow-hidden text-xs">
           <button
             type="button"
             onClick={() => setShowThinking(!showThinking)}
@@ -107,7 +115,6 @@ const AssistantMessageBody: React.FC<AssistantMessageBodyProps> = ({ content, on
   );
 };
 
-
 interface ChatInterfaceProps {
   activeWorkspace: WorkspaceResponse | null;
   models: ModelResponse[];
@@ -144,46 +151,188 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [useImageGen, setUseImageGen] = useState<boolean>(false);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
+  // Claude UI Dropdown & Audio States
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState<boolean>(false);
+  const [isPlusMenuOpen, setIsPlusMenuOpen] = useState<boolean>(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState<string>('');
+  const [isListening, setIsListening] = useState<boolean>(false);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<any>(null);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setIsModelMenuOpen(false);
+      }
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setIsPlusMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Close image modal on Escape key
   useEffect(() => {
     const handleKeyDownGlobal = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && previewImageModal) {
-        setPreviewImageModal(null);
-        setImageZoom(1);
+      if (e.key === 'Escape') {
+        if (previewImageModal) {
+          setPreviewImageModal(null);
+          setImageZoom(1);
+        }
+        setIsModelMenuOpen(false);
+        setIsPlusMenuOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDownGlobal);
     return () => window.removeEventListener('keydown', handleKeyDownGlobal);
   }, [previewImageModal]);
 
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Filter out pure embedding models from chat selector
+  // Filter for models that are ready for chat inference:
+  // 1. Must not be pure embedding models
+  // 2. Local models must be DOWNLOADED on PC (is_installed === true)
+  // 3. Cloud models only if API key is configured (is_installed === true)
   const chatModels = models.filter((m) => {
     const isEmbed =
       m.category?.toLowerCase() === 'embedding' ||
       m.name.toLowerCase().includes('embed') ||
       m.display_name?.toLowerCase().includes('embed');
-    return !isEmbed;
+    if (isEmbed) return false;
+
+    // Only display downloaded local models or active cloud models with API keys
+    return m.is_installed === true;
   });
 
-  // Initialize selected chat model
-  useEffect(() => {
-    if (chatModels.length > 0) {
-      const isCurrentValid = chatModels.some((m) => m.id === selectedModelId);
-      if (!isCurrentValid) {
-        const localInstalled = chatModels.find((m) => m.is_local && m.is_installed);
-        const anyInstalled = chatModels.find((m) => m.is_installed);
-        const candidate = localInstalled || anyInstalled || chatModels[0];
-        if (candidate) {
-          setSelectedModelId(candidate.id);
-        }
-      }
+  // Auto-resize textarea
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInputPrompt(e.target.value);
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 220)}px`;
     }
-  }, [models, selectedModelId]);
+  };
+
+  // Helper for Claude-style model button display
+  const getModelDisplay = (id: string) => {
+    if (!id || id === 'auto') {
+      return {
+        name: 'Auto Router',
+        badge: 'Smart',
+        desc: 'Sub-millisecond dynamic routing across your installed local models',
+        isLocal: false,
+        isInstalled: true,
+      };
+    }
+
+    const match = chatModels.find(
+      (m) =>
+        m.id === id ||
+        m.name === id ||
+        m.name.toLowerCase() === id.toLowerCase() ||
+        (m.display_name && m.display_name.toLowerCase() === id.toLowerCase())
+    );
+
+    if (match) {
+      let name = match.display_name || match.name;
+      let badge = match.is_local ? 'Local' : 'Cloud';
+
+      if (name.includes('Claude 3.7 Sonnet') || name.includes('Claude 3.5')) {
+        name = 'Sonnet 3.5';
+        badge = 'Medium';
+      } else if (name.includes('Qwen 2.5 Coder 7B')) {
+        name = 'Qwen 2.5 Coder';
+        badge = '7B Local';
+      } else if (name.includes('Llama 3.2 3B')) {
+        name = 'Llama 3.2';
+        badge = '3B Local';
+      } else if (name.includes('DeepSeek R1')) {
+        name = 'DeepSeek R1';
+        badge = 'Reasoning';
+      } else if (name.includes('Mistral 7B')) {
+        name = 'Mistral 7B';
+        badge = 'Local';
+      }
+
+      return {
+        name,
+        badge,
+        desc: match.description || (match.is_local ? 'Local downloaded model' : 'Frontier cloud model'),
+        isLocal: match.is_local,
+        isInstalled: match.is_installed,
+      };
+    }
+
+    return {
+      name: 'Auto Router',
+      badge: 'Smart',
+      desc: 'Sub-millisecond dynamic routing across your installed local models',
+      isLocal: false,
+      isInstalled: true,
+    };
+  };
+
+  const currentDisplay = getModelDisplay(selectedModelId);
+
+  // Web Speech API Voice Dictation
+  const handleToggleVoiceDictation = () => {
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert('Speech recognition is not supported in this browser/environment.');
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (transcript) {
+          setInputPrompt((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn('Speech recognition notice:', event.error);
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.warn('Speech recognition init error:', err);
+      setIsListening(false);
+    }
+  };
 
   useEffect(() => {
     if (activeConversationId) {
@@ -205,8 +354,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     try {
       const conv = await api.getConversation(convId);
       setMessages(conv.messages || []);
-      if (conv.active_model_id) {
-        setSelectedModelId(conv.active_model_id);
+      if (conv.model_name) {
+        setSelectedModelId(conv.model_name);
       }
     } catch (err) {
       console.error('Failed to load messages for conversation:', err);
@@ -250,12 +399,25 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
+  const handleSelectModel = (modelId: string) => {
+    setSelectedModelId(modelId);
+    setIsModelMenuOpen(false);
+  };
+
   const handleSendMessage = async () => {
     const text = inputPrompt.trim();
     if ((!text && attachments.length === 0) || isGenerating || isUploadingFile) return;
 
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    }
+
     const activeAttachments = [...attachments];
     setInputPrompt('');
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
     setAttachments([]);
     setIsGenerating(true);
 
@@ -619,42 +781,41 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
+  // Filter models for popup list
+  const filteredModels = chatModels.filter((m) => {
+    const q = modelSearchQuery.toLowerCase();
+    return (
+      m.name.toLowerCase().includes(q) ||
+      (m.display_name && m.display_name.toLowerCase().includes(q)) ||
+      (m.category && m.category.toLowerCase().includes(q))
+    );
+  });
+
   return (
     <div className="flex flex-col h-full bg-[#000000] text-white relative select-none">
-      {/* Sleek Minimalist Top Bar (ChatGPT / Claude style) */}
-      <header className="h-14 px-4 flex items-center justify-between bg-[#000000] flex-shrink-0 z-10">
+      {/* Sleek Minimalist Top Bar */}
+      <header className="h-12 px-4 flex items-center justify-between bg-[#000000] flex-shrink-0 z-10">
         <div className="flex items-center gap-2">
           {!isSidebarOpen && onToggleSidebar && (
             <button
               onClick={onToggleSidebar}
-              className="p-2 rounded-[10px] hover:bg-[#171615] text-[#949494] hover:text-white transition-colors mr-1"
+              className="p-1.5 rounded-[9px] hover:bg-[#1c1b1a] text-[#949494] hover:text-white transition-colors"
               title="Open Sidebar"
             >
               <PanelLeft className="w-4 h-4" />
             </button>
           )}
 
-          {/* Model Selector Dropdown - Clean & Sleek like ChatGPT */}
-          <div className="relative flex items-center">
-            <select
-              value={selectedModelId}
-              onChange={(e) => setSelectedModelId(e.target.value)}
-              className="appearance-none bg-transparent hover:bg-[#171615] text-sm font-semibold text-white pl-2 pr-7 py-1.5 rounded-[10px] focus:outline-none cursor-pointer transition-colors"
-            >
-              <option value="auto" className="bg-[#171615] text-[#34888D] font-bold">
-                ⚡ Auto (Sub-ms Smart Router)
-              </option>
-              {chatModels.map((m) => (
-                <option key={m.id} value={m.name || m.id} className="bg-[#171615] text-white">
-                  {m.display_name} {m.is_local ? (m.is_installed ? '⚡ Local' : '📥 Download') : '☁️ Cloud'}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="w-4 h-4 text-[#949494] absolute right-2 pointer-events-none" />
+          <div className="flex items-center gap-2 text-xs font-semibold text-[#c4c4c4]">
+            <span
+              className="w-2 h-2 rounded-full ring-2 ring-[#016A71]/40"
+              style={{ backgroundColor: activeWorkspace?.color || '#016A71' }}
+            />
+            <span>{activeWorkspace?.name || 'Aetherius'}</span>
           </div>
         </div>
 
-        {/* Right Action: Clean Export Button */}
+        {/* Right Action: Export Button */}
         <div className="flex items-center gap-2">
           {activeConversationId && (
             <a
@@ -662,7 +823,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               target="_blank"
               rel="noreferrer"
               download={`session-${activeConversationId}.md`}
-              className="p-2 rounded-[10px] text-[#949494] hover:text-white hover:bg-[#171615] transition-colors"
+              className="p-1.5 rounded-[9px] text-[#949494] hover:text-white hover:bg-[#1c1b1a] transition-colors"
               title="Export Conversation"
             >
               <Download className="w-4 h-4" />
@@ -671,12 +832,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       </header>
 
-      {/* Main Conversation Stream (Centered Max-W-3XL layout like Claude/ChatGPT) */}
+      {/* Main Conversation Stream (Centered Max-W-3XL layout) */}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className="flex-1 overflow-y-auto px-4 md:px-6 py-6 select-text"
+        className="flex-1 overflow-y-auto px-4 md:px-6 py-4 select-text"
       >
         {/* Drag & Drop Overlay */}
         {isDraggingOver && (
@@ -690,7 +851,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div className="max-w-3xl mx-auto space-y-6">
           {messages.length === 0 ? (
             <div className="py-12 flex flex-col items-center justify-center text-center">
-              <div className="w-12 h-12 rounded-[12px] bg-[#016A71]/15 border border-[#016A71]/30 flex items-center justify-center mb-4 shadow-[0_0_24px_rgba(1,106,113,0.25)]">
+              <div className="w-12 h-12 rounded-[14px] bg-[#016A71]/15 border border-[#016A71]/30 flex items-center justify-center mb-4 shadow-[0_0_24px_rgba(1,106,113,0.25)]">
                 <Sparkles className="w-6 h-6 text-[#34888D]" />
               </div>
               <h2 className="text-2xl font-bold text-white tracking-tight">
@@ -705,8 +866,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 {getWorkspaceSuggestions().map((sug, sIdx) => (
                   <button
                     key={sIdx}
-                    onClick={() => setInputPrompt(sug.prompt)}
-                    className="p-4 rounded-[11px] bg-[#171615] border border-[#2a2928] hover:border-[#34888D]/60 hover:bg-[#1f1e1d] transition-all text-left group"
+                    onClick={() => {
+                      setInputPrompt(sug.prompt);
+                      if (inputRef.current) inputRef.current.focus();
+                    }}
+                    className="p-4 rounded-[14px] bg-[#161615] border border-[#262524] hover:border-[#34888D]/60 hover:bg-[#1c1b1a] transition-all text-left group"
                   >
                     <div className="text-xs font-semibold text-[#34888D] group-hover:text-white transition-colors mb-1">
                       {sug.title}
@@ -753,9 +917,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
                   {/* Message Bubble */}
                   <div
-                    className={`w-full rounded-[12px] p-4 text-sm leading-relaxed ${
+                    className={`w-full rounded-[14px] p-4 text-sm leading-relaxed ${
                       isUser
-                        ? 'bg-[#171615] border border-[#2a2928] text-white shadow-sm max-w-[85%]'
+                        ? 'bg-[#18181b] border border-[#2a2928] text-white shadow-sm max-w-[85%]'
                         : 'bg-transparent text-white'
                     }`}
                   >
@@ -767,7 +931,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                             <div
                               key={att.id}
                               onClick={() => setPreviewImageModal(att.preview_url || null)}
-                              className="relative rounded-[11px] overflow-hidden border border-[#2a2928] cursor-pointer group max-w-[260px] max-h-[180px] bg-black/40"
+                              className="relative rounded-[12px] overflow-hidden border border-[#2a2928] cursor-pointer group max-w-[260px] max-h-[180px] bg-black/40"
                               title="Click to enlarge image"
                             >
                               <img
@@ -782,7 +946,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                           ) : (
                             <div
                               key={att.id}
-                              className="flex items-center gap-2.5 px-3 py-2 rounded-[11px] bg-[#171615] border border-[#2a2928] text-xs text-white"
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-[11px] bg-[#161615] border border-[#2a2928] text-xs text-white"
                             >
                               <FileText className="w-4 h-4 text-[#34888D] flex-shrink-0" />
                               <div className="flex flex-col min-w-0">
@@ -822,7 +986,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                           {msg.sources.map((src, sIdx) => (
                             <div
                               key={sIdx}
-                              className="p-3 rounded-[11px] bg-[#171615] border border-[#2a2928] text-xs flex flex-col justify-between"
+                              className="p-3 rounded-[11px] bg-[#161615] border border-[#2a2928] text-xs flex flex-col justify-between"
                             >
                               <div className="flex items-center justify-between mb-1.5">
                                 <span className="font-medium text-white truncate flex items-center gap-1.5">
@@ -867,8 +1031,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       </div>
 
-      {/* Floating Bottom Input Dock (Centered max-w-3xl) */}
-      <div className="p-4 bg-[#000000] border-t border-[#2a2928] flex-shrink-0">
+      {/* Claude-Style Chat Input Dock (Image 2 format) */}
+      <div className="p-4 bg-[#000000] flex-shrink-0">
         <div className="max-w-3xl mx-auto">
           {/* Attachment Preview Chips */}
           {(attachments.length > 0 || isUploadingFile) && (
@@ -876,7 +1040,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               {attachments.map((att) => (
                 <div
                   key={att.id}
-                  className="flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-[11px] bg-[#171615] border border-[#2a2928] text-xs text-white shadow-sm"
+                  className="flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-[10px] bg-[#18181b] border border-[#2e2d2c] text-xs text-white shadow-sm"
                 >
                   {att.is_image ? (
                     <ImageIcon className="w-3.5 h-3.5 text-[#34888D] flex-shrink-0" />
@@ -889,7 +1053,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   </span>
                   <button
                     onClick={() => handleRemoveAttachment(att.id)}
-                    className="p-1 hover:bg-[#201f1e] rounded-[6px] text-[#949494] hover:text-white transition-colors"
+                    className="p-1 hover:bg-[#282725] rounded-[6px] text-[#949494] hover:text-white transition-colors"
                     title="Remove attachment"
                   >
                     <X className="w-3 h-3" />
@@ -897,10 +1061,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               ))}
               {isUploadingFile && (
-                <div className="flex items-center gap-2 px-3 py-1 rounded-[11px] bg-[#016A71]/20 border border-[#016A71]/40 text-xs text-[#34888D]">
+                <div className="flex items-center gap-2 px-3 py-1 rounded-[10px] bg-[#016A71]/20 border border-[#016A71]/40 text-xs text-[#34888D]">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Processing file...</span>
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* Active Feature Indicators (Web, RAG, Image Gen) */}
+          {(useWebSearch || useImageGen || !useRAG) && (
+            <div className="flex items-center gap-2 mb-2 px-1 text-[11px]">
+              {useWebSearch && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#016A71]/25 text-[#34888D] border border-[#016A71]/40">
+                  <Globe className="w-3 h-3" /> Live Web Search Active
+                </span>
+              )}
+              {useImageGen && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40">
+                  <Wand2 className="w-3 h-3" /> Image / Diagram Mode Active
+                </span>
+              )}
+              {!useRAG && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                  <Database className="w-3 h-3" /> RAG Knowledge Disabled
+                </span>
               )}
             </div>
           )}
@@ -915,103 +1100,292 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             onChange={(e) => handleFileSelect(e.target.files)}
           />
 
-          {/* Clean Floating Input Box */}
-          <div className="rounded-[12px] bg-[#171615] border border-[#2a2928] focus-within:border-[#34888D]/70 focus-within:ring-1 focus-within:ring-[#34888D]/50 transition-all p-2.5">
+          {/* Claude Card Container matching Image 2 */}
+          <div className="relative rounded-[22px] bg-[#1a1918] border border-[#2e2d2c] focus-within:border-[#4a4947] shadow-[0_8px_30px_rgba(0,0,0,0.45)] transition-all p-3 flex flex-col justify-between min-h-[96px]">
+            {/* Top Textarea */}
             <textarea
               ref={inputRef}
-              rows={2}
+              rows={1}
               value={inputPrompt}
-              onChange={(e) => setInputPrompt(e.target.value)}
+              onChange={handleTextareaChange}
               onKeyDown={handleKeyDown}
-              placeholder={`Ask ${activeWorkspace?.name || 'Aetherius'}...`}
-              className="w-full bg-transparent px-2 py-1 text-sm text-white placeholder-[#949494] resize-none focus:outline-none max-h-32"
+              placeholder="How can I help you today?"
+              className="w-full bg-transparent px-2.5 pt-1 pb-2 text-[15px] text-white placeholder-[#787775] resize-none focus:outline-none leading-relaxed overflow-y-auto"
+              style={{ maxHeight: '200px' }}
             />
 
-            {/* Bottom Actions Row inside Input Box */}
-            <div className="flex items-center justify-between pt-2 border-t border-[#2a2928]/60 mt-1">
-              <div className="flex items-center gap-1.5">
-                {/* Upload attachment button */}
+            {/* Bottom Row Inside Input Box (matching Image 2) */}
+            <div className="flex items-center justify-between pt-1.5 px-1 relative">
+              {/* Left Side: Plus (+) Button with Popup Menu */}
+              <div className="relative" ref={plusMenuRef}>
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingFile || isGenerating}
-                  className="p-1.5 rounded-[9px] hover:bg-[#222120] text-[#949494] hover:text-white transition-colors border border-transparent hover:border-[#2a2928]"
-                  title="Attach file, doc or image"
+                  onClick={() => setIsPlusMenuOpen(!isPlusMenuOpen)}
+                  className="p-1.5 rounded-full hover:bg-[#292827] text-[#9c9b98] hover:text-white transition-colors flex items-center justify-center"
+                  title="Add attachments & capabilities"
                 >
-                  <Paperclip className="w-4 h-4" />
+                  <Plus className="w-5 h-5 stroke-[2.2]" />
                 </button>
 
-                {/* Quick Web Toggle Chip */}
-                <button
-                  type="button"
-                  onClick={() => setUseWebSearch(!useWebSearch)}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-[9px] text-[11px] font-medium transition-all ${
-                    useWebSearch
-                      ? 'bg-[#016A71]/30 text-[#34888D] border border-[#016A71]/60'
-                      : 'text-[#949494] hover:text-white hover:bg-[#222120]'
-                  }`}
-                  title="Search the live web"
-                >
-                  <Globe className="w-3 h-3" />
-                  <span>Search</span>
-                </button>
+                {/* Plus Action Popup Menu */}
+                {isPlusMenuOpen && (
+                  <div className="absolute bottom-full left-0 mb-3 w-64 rounded-[16px] bg-[#1a1918] border border-[#2e2d2c] shadow-[0_12px_40px_rgba(0,0,0,0.8)] backdrop-blur-xl p-2 z-50 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                    <div className="text-[11px] font-semibold text-[#787775] px-2 py-1 uppercase tracking-wider">
+                      Capabilities & Attachments
+                    </div>
 
-                {/* Quick RAG Toggle Chip */}
-                <button
-                  type="button"
-                  onClick={() => setUseRAG(!useRAG)}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-[9px] text-[11px] font-medium transition-all ${
-                    useRAG
-                      ? 'bg-[#016A71]/30 text-[#34888D] border border-[#016A71]/60'
-                      : 'text-[#949494] hover:text-white hover:bg-[#222120]'
-                  }`}
-                  title="Semantic RAG from company knowledge"
-                >
-                  <Database className="w-3 h-3" />
-                  <span>RAG</span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsPlusMenuOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[10px] hover:bg-[#262524] text-xs text-white transition-colors text-left"
+                    >
+                      <Paperclip className="w-4 h-4 text-[#34888D]" />
+                      <div>
+                        <div className="font-medium">Attach File / Image</div>
+                        <div className="text-[10px] text-[#949494]">PDF, Docs, Code, CSV, Images</div>
+                      </div>
+                    </button>
 
-                {/* Quick Image Gen Toggle Chip */}
-                <button
-                  type="button"
-                  onClick={() => setUseImageGen(!useImageGen)}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-[9px] text-[11px] font-medium transition-all ${
-                    useImageGen
-                      ? 'bg-rose-500/25 text-rose-400 border border-rose-500/50'
-                      : 'text-[#949494] hover:text-white hover:bg-[#222120]'
-                  }`}
-                  title="Generate AI Image or Diagram"
-                >
-                  <ImageIcon className="w-3 h-3" />
-                  <span>Image</span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUseWebSearch(!useWebSearch);
+                        setIsPlusMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-[10px] hover:bg-[#262524] text-xs text-white transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Globe className="w-4 h-4 text-[#34888D]" />
+                        <div>
+                          <div className="font-medium">Web Search</div>
+                          <div className="text-[10px] text-[#949494]">Retrieve live web intelligence</div>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                          useWebSearch ? 'bg-[#016A71] text-white' : 'bg-[#292827] text-[#949494]'
+                        }`}
+                      >
+                        {useWebSearch ? 'ON' : 'OFF'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUseRAG(!useRAG);
+                        setIsPlusMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-[10px] hover:bg-[#262524] text-xs text-white transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Database className="w-4 h-4 text-[#34888D]" />
+                        <div>
+                          <div className="font-medium">Knowledge Base RAG</div>
+                          <div className="text-[10px] text-[#949494]">Query indexed workspace documents</div>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                          useRAG ? 'bg-[#016A71] text-white' : 'bg-[#292827] text-[#949494]'
+                        }`}
+                      >
+                        {useRAG ? 'ON' : 'OFF'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUseImageGen(!useImageGen);
+                        setIsPlusMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-[10px] hover:bg-[#262524] text-xs text-white transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Wand2 className="w-4 h-4 text-rose-400" />
+                        <div>
+                          <div className="font-medium">Visual Generation</div>
+                          <div className="text-[10px] text-[#949494]">Render diagrams & illustrations</div>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                          useImageGen ? 'bg-rose-600 text-white' : 'bg-[#292827] text-[#949494]'
+                        }`}
+                      >
+                        {useImageGen ? 'ON' : 'OFF'}
+                      </span>
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Send Message Button */}
-              <button
-                onClick={handleSendMessage}
-                disabled={
-                  (!inputPrompt.trim() && attachments.length === 0) ||
-                  isGenerating ||
-                  isUploadingFile
-                }
-                className={`p-2 rounded-[10px] transition-all ${
-                  (inputPrompt.trim() || attachments.length > 0) &&
-                  !isGenerating &&
-                  !isUploadingFile
-                    ? 'bg-[#016A71] hover:bg-[#01575d] text-white shadow-[0_0_12px_rgba(1,106,113,0.35)]'
-                    : 'bg-[#222120] text-[#949494]/40 cursor-not-allowed'
-                }`}
-                title="Send Message (Enter)"
-              >
-                <ArrowUp className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+              {/* Right Side: Claude-style Model Selector + Mic + Waveform/Send */}
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                {/* Model Selector Dropdown Trigger Button */}
+                <div className="relative" ref={modelMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-[12px] text-xs font-medium text-[#c4c4c4] hover:text-white hover:bg-[#292827] transition-all cursor-pointer border border-transparent hover:border-[#383735]"
+                    title="Change Model"
+                  >
+                    <span>{currentDisplay.name}</span>
+                    <span className="text-[10px] text-[#949494] font-normal px-1 py-0.5 rounded bg-white/5">
+                      {currentDisplay.badge}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5 text-[#949494]" />
+                  </button>
 
-          <div className="flex items-center justify-between mt-2 px-1 text-[11px] text-[#949494]">
-            <span>Aetherius Intelligence • PostgreSQL pgvector RAG</span>
-            <span className="hidden sm:inline">Press Enter to send, Shift+Enter for new line</span>
+                  {/* Claude Model Selection Dropdown Popup */}
+                  {isModelMenuOpen && (
+                    <div className="absolute bottom-full right-0 mb-3 w-80 max-h-96 rounded-[18px] bg-[#1a1918] border border-[#2e2d2c] shadow-[0_16px_50px_rgba(0,0,0,0.85)] backdrop-blur-xl p-2.5 z-50 flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-150">
+                      {/* Search bar inside model menu */}
+                      <div className="relative mb-2">
+                        <Search className="w-3.5 h-3.5 text-[#787775] absolute left-3 top-2.5" />
+                        <input
+                          type="text"
+                          value={modelSearchQuery}
+                          onChange={(e) => setModelSearchQuery(e.target.value)}
+                          placeholder="Search models..."
+                          className="w-full bg-[#262524] rounded-[10px] pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#787775] focus:outline-none border border-transparent focus:border-[#34888D]"
+                        />
+                      </div>
+
+                      <div className="overflow-y-auto max-h-72 space-y-1 pr-1 custom-scrollbar">
+                        {/* Auto Smart Router Option */}
+                        <button
+                          type="button"
+                          onClick={() => handleSelectModel('auto')}
+                          className={`w-full flex items-center justify-between p-2.5 rounded-[12px] text-left transition-all ${
+                            selectedModelId === 'auto'
+                              ? 'bg-[#016A71]/25 border border-[#016A71]/50 text-white'
+                              : 'hover:bg-[#262524] text-[#c4c4c4]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <Sparkles className="w-4 h-4 text-[#34888D] flex-shrink-0" />
+                            <div>
+                              <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                                <span>Auto (Sub-ms Smart Router)</span>
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#016A71]/30 text-[#34888D] font-mono">
+                                  Default
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-[#949494] mt-0.5">
+                                Intelligently selects best model per query
+                              </div>
+                            </div>
+                          </div>
+                          {selectedModelId === 'auto' && (
+                            <Check className="w-4 h-4 text-[#34888D] flex-shrink-0" />
+                          )}
+                        </button>
+
+                        {/* Local & Cloud Models */}
+                        <div className="pt-2 pb-1 text-[10px] font-semibold text-[#787775] uppercase tracking-wider px-2">
+                          Available Models ({filteredModels.length})
+                        </div>
+
+                        {filteredModels.map((m) => {
+                          const isSelected =
+                            selectedModelId === m.id ||
+                            selectedModelId === m.name ||
+                            (m.name && selectedModelId.toLowerCase() === m.name.toLowerCase());
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => handleSelectModel(m.name || m.id)}
+                              className={`w-full flex items-center justify-between p-2.5 rounded-[12px] text-left transition-all ${
+                                isSelected
+                                  ? 'bg-[#016A71]/25 border border-[#016A71]/50 text-white'
+                                  : 'hover:bg-[#262524] text-[#c4c4c4]'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                {m.is_local ? (
+                                  <Cpu className="w-4 h-4 text-[#34888D] flex-shrink-0" />
+                                ) : (
+                                  <Cloud className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                                )}
+                                <div className="min-w-0">
+                                  <div className="text-xs font-medium text-white truncate flex items-center gap-1.5">
+                                    <span className="truncate">{m.display_name || m.name}</span>
+                                    <span
+                                      className={`text-[9px] px-1.5 py-0.2 rounded font-mono ${
+                                        m.is_local
+                                          ? m.is_installed
+                                            ? 'bg-emerald-500/20 text-emerald-300'
+                                            : 'bg-amber-500/20 text-amber-300'
+                                          : 'bg-purple-500/20 text-purple-300'
+                                      }`}
+                                    >
+                                      {m.is_local ? (m.is_installed ? 'Local' : 'Pull') : 'Cloud'}
+                                    </span>
+                                  </div>
+                                  <div className="text-[10px] text-[#949494] truncate mt-0.5">
+                                    {m.description || m.category || 'General language model'}
+                                  </div>
+                                </div>
+                              </div>
+                              {isSelected && (
+                                <Check className="w-4 h-4 text-[#34888D] flex-shrink-0 ml-2" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Microphone / Voice Dictation Button */}
+                <button
+                  type="button"
+                  onClick={handleToggleVoiceDictation}
+                  className={`p-1.5 rounded-full transition-all ${
+                    isListening
+                      ? 'bg-rose-500/30 text-rose-400 animate-pulse ring-2 ring-rose-500/50'
+                      : 'hover:bg-[#292827] text-[#9c9b98] hover:text-white'
+                  }`}
+                  title={isListening ? 'Stop voice recording' : 'Voice dictation'}
+                >
+                  {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+
+                {/* Audio Waveform / Mode Icon & Send Arrow (Image 2 format) */}
+                {inputPrompt.trim() || attachments.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={handleSendMessage}
+                    disabled={isGenerating || isUploadingFile}
+                    className={`p-1.5 rounded-full transition-all flex items-center justify-center ${
+                      !isGenerating && !isUploadingFile
+                        ? 'bg-white text-black hover:bg-white/90 shadow-[0_0_12px_rgba(255,255,255,0.25)]'
+                        : 'bg-[#292827] text-[#787775] cursor-not-allowed'
+                    }`}
+                    title="Send Message (Enter)"
+                  >
+                    <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleToggleVoiceDictation}
+                    className="flex items-center gap-0.5 p-1.5 rounded-full hover:bg-[#292827] text-[#9c9b98] hover:text-white transition-colors"
+                    title="Audio mode"
+                  >
+                    <AudioWaveform className="w-4 h-4" />
+                    <ChevronDown className="w-3 h-3 text-[#787775]" />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1028,7 +1402,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           {/* Top Control Bar */}
           <div
             onClick={(e) => e.stopPropagation()}
-            className="absolute top-4 inset-x-4 max-w-3xl mx-auto flex items-center justify-between z-10 px-4 py-2 rounded-[12px] bg-[#171615]/90 border border-[#2a2928] backdrop-blur-md text-white cursor-default shadow-xl"
+            className="absolute top-4 inset-x-4 max-w-3xl mx-auto flex items-center justify-between z-10 px-4 py-2 rounded-[14px] bg-[#18181b]/90 border border-[#2e2d2c] backdrop-blur-md text-white cursor-default shadow-xl"
           >
             <div className="flex items-center gap-2 text-xs font-semibold text-[#34888D]">
               <ImageIcon className="w-4 h-4" />
@@ -1038,7 +1412,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setImageZoom((prev) => Math.max(0.5, Number((prev - 0.25).toFixed(2))))}
-                className="p-1.5 rounded-[8px] hover:bg-[#222120] text-[#949494] hover:text-white transition-colors"
+                className="p-1.5 rounded-[8px] hover:bg-[#282725] text-[#949494] hover:text-white transition-colors"
                 title="Zoom Out"
               >
                 <ZoomOut className="w-4 h-4" />
@@ -1048,20 +1422,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               </span>
               <button
                 onClick={() => setImageZoom((prev) => Math.min(3, Number((prev + 0.25).toFixed(2))))}
-                className="p-1.5 rounded-[8px] hover:bg-[#222120] text-[#949494] hover:text-white transition-colors"
+                className="p-1.5 rounded-[8px] hover:bg-[#282725] text-[#949494] hover:text-white transition-colors"
                 title="Zoom In"
               >
                 <ZoomIn className="w-4 h-4" />
               </button>
               <button
                 onClick={() => setImageZoom(1)}
-                className="p-1.5 rounded-[8px] hover:bg-[#222120] text-[#949494] hover:text-white transition-colors"
+                className="p-1.5 rounded-[8px] hover:bg-[#282725] text-[#949494] hover:text-white transition-colors"
                 title="Reset Zoom (100%)"
               >
                 <RotateCcw className="w-4 h-4" />
               </button>
 
-              <div className="w-[1px] h-4 bg-[#2a2928] mx-1" />
+              <div className="w-[1px] h-4 bg-[#2e2d2c] mx-1" />
 
               <a
                 href={previewImageModal}
@@ -1080,7 +1454,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   setPreviewImageModal(null);
                   setImageZoom(1);
                 }}
-                className="p-1.5 rounded-[8px] hover:bg-[#222120] text-[#949494] hover:text-white transition-colors"
+                className="p-1.5 rounded-[8px] hover:bg-[#282725] text-[#949494] hover:text-white transition-colors"
                 title="Close (Esc)"
               >
                 <X className="w-4 h-4" />
@@ -1097,7 +1471,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               src={previewImageModal}
               alt="Enlarged Preview"
               style={{ transform: `scale(${imageZoom})`, transformOrigin: 'center' }}
-              className="max-w-full max-h-[75vh] object-contain rounded-[11px] shadow-2xl transition-transform duration-150"
+              className="max-w-full max-h-[75vh] object-contain rounded-[14px] shadow-2xl transition-transform duration-150"
             />
           </div>
         </div>

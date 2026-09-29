@@ -137,7 +137,7 @@ class ChatService:
         res_h = await db.execute(
             select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.asc())
         )
-        recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-8:]]
+        recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-10:]]
 
         # Multi-Turn Semantic Query Intelligence Analysis
         from backend.app.services.query_intelligence_service import QueryIntelligenceService
@@ -162,7 +162,7 @@ class ChatService:
                 )
                 generated_image_url = img_res.preview_url or img_res.image_url
             except Exception as e:
-                logger.warn(f"Autonomous image generation notice: {e}")
+                logger.warning(f"Autonomous image generation notice: {e}")
 
         # Parallel retrieval tasks
         async def fetch_workspace():
@@ -200,19 +200,12 @@ class ChatService:
                     pass
             return []
 
-        async def fetch_history():
-            res = await db.execute(
-                select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.asc())
-            )
-            return [{"role": h.role, "content": h.content} for h in res.scalars().all()[-8:]]
-
         # Execute pre-flight tasks concurrently in parallel (<20ms)
-        workspace_obj, retrieved_memories, rag_chunks, web_raw_results, recent_history = await asyncio.gather(
+        workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
             fetch_workspace(),
             fetch_memories(),
             fetch_rag(),
-            fetch_web(),
-            fetch_history()
+            fetch_web()
         )
 
         workspace_instructions = workspace_obj.instructions if workspace_obj else "You are Aetherius AI."
@@ -242,7 +235,8 @@ class ChatService:
             rag_chunks=rag_chunks,
             web_results=web_results,
             chat_history=recent_history,
-            current_user_message=effective_user_message
+            current_user_message=effective_user_message,
+            accumulated_constraints=q_analysis.extracted_constraints
         )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
@@ -260,12 +254,15 @@ class ChatService:
             max_tokens=request.max_tokens
         )
 
+        # Save Assistant Message
         assistant_metadata = {
             "rag_applied": rag_applied,
             "web_searched": web_searched,
             "routing_reason": routing_reason,
             "execution_mode": execution_mode,
             "image_url": generated_image_url,
+            "context_stats": assembled["stats"],
+            "constraints_applied": q_analysis.extracted_constraints,
         }
 
         assistant_msg = Message(
@@ -281,16 +278,28 @@ class ChatService:
         await db.commit()
         await db.refresh(assistant_msg)
 
-        parsed_citations = [SourceCitation(**c) if isinstance(c, dict) else c for c in assistant_msg.citations]
+        # Background fact extraction (non-blocking)
+        try:
+            asyncio.create_task(
+                MemoryService.extract_and_store_from_text(
+                    db=db,
+                    text=request.message,
+                    workspace_slug=request.workspace_slug,
+                    conversation_id=conversation.id
+                )
+            )
+        except Exception:
+            pass
 
         return ChatCompletionResponse(
             conversation_id=conversation.id,
             user_message=MessageResponse.model_validate(user_msg),
             assistant_message=MessageResponse.model_validate(assistant_msg),
             model_used=model_to_use,
-            citations=parsed_citations,
+            citations=citations,
             web_searched=web_searched,
-            rag_applied=rag_applied
+            rag_applied=rag_applied,
+            image_url=generated_image_url
         )
 
     @staticmethod
@@ -397,11 +406,11 @@ class ChatService:
             yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': explicit_mem_reply, 'conversation_id': conversation.id, 'model_used': model_to_use, 'citations': []})}\n\n"
             return
 
-        # Fetch recent history first to enable deep multi-turn query intelligence
+        # Fetch recent history first
         res_h = await db.execute(
             select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.asc())
         )
-        recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-8:]]
+        recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-10:]]
 
         # Multi-Turn Semantic Query Intelligence Analysis
         from backend.app.services.query_intelligence_service import QueryIntelligenceService
@@ -462,7 +471,7 @@ class ChatService:
                 )
                 return res.preview_url or res.image_url
             except Exception as e:
-                logger.warn(f"Visual gen warning: {e}")
+                logger.warning(f"Visual gen warning: {e}")
                 return None
 
         # Run all remaining pre-flight operations concurrently (<15ms)
@@ -505,7 +514,8 @@ class ChatService:
             rag_chunks=rag_chunks,
             web_results=web_results,
             chat_history=recent_history,
-            current_user_message=effective_user_message
+            current_user_message=effective_user_message,
+            accumulated_constraints=q_analysis.extracted_constraints
         )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
@@ -535,7 +545,8 @@ class ChatService:
             "routing_reason": routing_reason,
             "execution_mode": execution_mode,
             "image_url": generated_image_url,
-            "context_stats": assembled["stats"]
+            "context_stats": assembled["stats"],
+            "constraints_applied": q_analysis.extracted_constraints,
         }
 
         assistant_msg = Message(

@@ -166,10 +166,10 @@ class MemoryService:
         lower = text.strip().lower()
 
         # 1. Ask what is in memory
-        if re.search(r"^(what (do you remember|is in my memory|have you learned)|show (my )?memories|list (my )?memories|what do you know about me)", lower):
+        if re.search(r"(?:hi|hello|hey|please|can you tell me)?\s*(?:what (?:do you remember|is in my memory|have you learned)|show (?:my )?memories|list (?:my )?memories|what do you know about me)", lower):
             all_mems = await cls.list_memories(db=db, workspace_slug=workspace_slug, limit=50)
             if not all_mems:
-                return "🧠 **Memory Profile:**\nI don't have any saved memories about you yet. You can tell me things like *'Remember that I prefer TypeScript and concise answers'* or *'I am a senior frontend engineer'*."
+                return "🧠 **Memory Profile:**\nI don't have any saved memories about you yet. You can tell me things like *'Remember that I prefer TypeScript and concise answers'* or *'I am a senior software engineer'*."
             
             lines = ["🧠 **Here is what I've learned and saved to memory:**\n"]
             for m in all_mems:

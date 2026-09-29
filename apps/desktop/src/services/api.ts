@@ -30,6 +30,7 @@ import {
   SystemDiagnosticsResponse,
   HuggingFaceModelCard,
   HuggingFaceDatasetCard,
+  DailyOpenSourceFeed,
   ModelUpgradeSuggestion,
   ModelInstallProgress,
 } from '../types';
@@ -191,6 +192,14 @@ class ApiService {
   async getHFDatasets(query?: string): Promise<HuggingFaceDatasetCard[]> {
     const q = query ? `?q=${encodeURIComponent(query)}` : '';
     return this.request<HuggingFaceDatasetCard[]>(`/api/v1/models/huggingface/datasets${q}`);
+  }
+
+  async getDailyFeed(): Promise<DailyOpenSourceFeed> {
+    return this.request<DailyOpenSourceFeed>('/api/v1/models/daily-feed');
+  }
+
+  async syncDailyModels(): Promise<{ status: string; message: string; last_synced_at: string; models_count: number; datasets_count: number }> {
+    return this.request('/api/v1/models/sync-daily', { method: 'POST' });
   }
 
   async getModelUpgradeSuggestions(): Promise<ModelUpgradeSuggestion[]> {

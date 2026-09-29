@@ -96,8 +96,8 @@ class OllamaProvider(BaseModelProvider):
             if clean_tag.startswith(base) or base in clean_tag:
                 return tag
         
-        # 5. Fallback to best available installed reasoning / coding model
-        for preferred in ["deepseek-r1:8b", "qwen2.5-coder:7b", "mistral:7b", "llama3.2:3b", "llama3:latest", "qwen2.5-coder:14b", "qwen3:8b", "qwen2.5-coder:1.5b"]:
+        # 5. Fallback to best available installed lightweight coding/reasoning model
+        for preferred in ["llama3.2:3b", "qwen2.5-coder:1.5b", "qwen2.5-coder:7b", "deepseek-r1:8b", "mistral:7b", "llama3:latest", "qwen2.5-coder:14b", "qwen3:8b"]:
             for tag in chat_installed:
                 if preferred.split(":")[0] in tag:
                     return tag
@@ -123,7 +123,7 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=4.0)) as client:
             res = await client.post(
                 f"{self.base_url}/api/chat",
                 json={
@@ -159,7 +159,7 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=4.0)) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",

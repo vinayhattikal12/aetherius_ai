@@ -98,7 +98,13 @@ class ModelRouter:
             complexity = 0.2
             routing_badge = "⚡ Sub-Second Ultra-Fast Engine"
 
-        # 4. Score Candidate Models
+        # 4. Check available Ollama installed tags and API keys
+        import os
+        from backend.app.services.providers.model_manager import model_manager
+        installed_tags = await model_manager.ollama.get_installed_tags() if await model_manager.ollama.is_available() else []
+        has_cloud_keys = bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("GROQ_API_KEY"))
+
+        # Score Candidate Models
         candidate_models: List[Tuple[ModelRegistry, float]] = []
         for m in models:
             # Privacy boundary check
@@ -108,32 +114,38 @@ class ModelRouter:
                 continue
 
             score = 1.0
-            # Strong bonus for already installed models
-            if m.is_installed:
-                score += 5.0
+
+            # Dynamic check against actual running Ollama tags
+            is_installed_in_ollama = m.name in installed_tags or any(m.name.split(":")[0] in t for t in installed_tags)
+            if is_installed_in_ollama or m.is_installed:
+                score += 15.0
+
+            # If no cloud keys are configured, heavily penalize cloud models
+            if not m.is_local and not has_cloud_keys:
+                score -= 25.0
 
             # Match capabilities
             if is_coding and m.coding_capable:
-                score += 4.0
+                score += 5.0
             if is_reasoning and m.reasoning_capable:
-                score += 4.0
+                score += 5.0
             if is_fast and m.parameters_b <= 4.0:
-                score += 3.0
+                score += 4.0
 
             # Workspace domain alignment
             if "engineering" in slug or "dev" in slug or "software" in slug:
                 if m.coding_capable:
-                    score += 3.0
+                    score += 4.0
             elif "research" in slug or "math" in slug or "science" in slug:
                 if m.reasoning_capable:
-                    score += 3.0
+                    score += 4.0
 
             # Hardware tier feasibility
             if m.is_local:
                 if compute_tier in ["Low", "Minimum"] and m.parameters_b > 4.0:
                     score -= 2.0
                 elif compute_tier in ["Ultra", "High"] and m.parameters_b >= 7.0:
-                    score += 1.0
+                    score += 2.0
 
             candidate_models.append((m, score))
 

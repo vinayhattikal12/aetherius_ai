@@ -1,3 +1,4 @@
+import os
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from backend.app.services.providers.base import BaseModelProvider
 from backend.app.services.providers.ollama_provider import OllamaProvider
@@ -6,19 +7,28 @@ from backend.app.core.logging import logger
 
 
 class ModelManager:
-    """Orchestrates model execution between local (Ollama/llama.cpp) and cloud providers."""
+    """Orchestrates model execution between local (Ollama) and cloud providers."""
 
     def __init__(self):
         self.ollama = OllamaProvider()
         self.cloud = CloudProvider()
 
     async def get_provider(self, model_name: str) -> BaseModelProvider:
-        # Check if Ollama is running and model is local or has a tag
-        if await self.ollama.is_available():
+        is_cloud_explicit = any(k in model_name.lower() for k in ["claude", "sonnet", "haiku", "opus", "gpt", "openai", "anthropic", "groq", "cloud"])
+        ollama_available = await self.ollama.is_available()
+
+        if is_cloud_explicit:
+            return self.cloud
+
+        if ollama_available:
             installed = await self.ollama.get_installed_tags()
-            if model_name in installed or ":" in model_name or "local" in model_name.lower():
-                return self.ollama
-        # Default to Cloud / Unified provider
+            if installed:
+                # Direct match or prefix/family match
+                if model_name in installed or any(model_name.split(":")[0] in t for t in installed):
+                    return self.ollama
+                if not is_cloud_explicit:
+                    return self.ollama
+
         return self.cloud
 
     async def pull_model(self, model_name: str) -> bool:

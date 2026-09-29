@@ -5,11 +5,17 @@ from backend.app.models.knowledge import DocumentChunk
 
 
 class ContextEngine:
-    """Assembles and optimizes hierarchical context within model token budget constraints."""
+    """
+    10-Layer Production Context Engine:
+    Assembles, priorities, and token-budgets multi-tier context across:
+    1. User Context, 2. Conversation Context, 3. Turn Context,
+    4. Task Context, 5. Project Context, 6. Workspace Context,
+    7. Memory Context, 8. Knowledge (RAG) Context, 9. Tool Context, 10. Environment Context.
+    """
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        """Fast robust token estimation (average ~4 chars per token)."""
+        """Fast robust token estimation (~3.8 chars per token average)."""
         if not text:
             return 0
         return max(1, int(len(text) / 3.8))
@@ -22,63 +28,94 @@ class ContextEngine:
         system_instruction: Optional[str] = None,
         workspace_name: str = "General",
         workspace_instructions: Optional[str] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        task_context: Optional[Dict[str, Any]] = None,
+        project_context: Optional[Dict[str, Any]] = None,
+        environment_context: Optional[Dict[str, Any]] = None,
+        tool_definitions: Optional[List[Dict[str, Any]]] = None,
         memories: Optional[List[Memory]] = None,
         rag_chunks: Optional[List[Tuple[DocumentChunk, float]]] = None,
         web_results: Optional[List[Dict[str, Any]]] = None,
         chat_history: Optional[List[Dict[str, str]]] = None,
-        current_user_message: str = ""
+        current_user_message: str = "",
+        accumulated_constraints: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Assembles a prioritized, token-budgeted prompt payload."""
-        # 1. Calculate available budget for prompt
-        available_prompt_tokens = max(1000, model_context_limit - max_output_tokens)
+        """Assembles prioritized token-budgeted prompt payload."""
+        available_prompt_tokens = max(1200, model_context_limit - max_output_tokens)
 
-        # 2. Build Base System Prompt
+        # 1. Base System Directive & Workspace Context
         system_sections = []
         if system_instruction:
             system_sections.append(system_instruction)
 
-        system_sections.append(
-            f"You are Aetherius AI, an elite AI operating environment running in the '{workspace_name}' workspace.\n"
-            "CORE BEHAVIOR & INTELLIGENCE DIRECTIVES:\n"
-            "- DYNAMIC BREVITY & DEPTH: Calibrate your response length to the user's intent. For direct, simple, or quick queries, provide punchy, crisp, fluff-free answers. For complex concepts, how-to guides, architectural questions, or multi-step tasks, provide structured deep-dives with headers and bullet points.\n"
-            "- PRACTICAL EXAMPLES: Whenever explaining a concept, mechanism, algorithm, or methodology, ALWAYS illustrate with a concrete, realistic real-world example, analogy, or runnable code snippet.\n"
-            "- CODE & VISUAL FORMATTING: Use clean markdown with precise language tags (e.g. ```python, ```typescript, ```sql). When visual diagrams or flowcharts are helpful, include structured ASCII or Mermaid diagrams.\n"
-            "- FACTUAL ACCURACY: When [Live Web Search Results] or [Document Knowledge] are provided, use those live facts, numbers, and data points directly in your response.\n"
-            "- At the end of your response, provide a '### Sources & References' section with links when external sources are cited."
+        base_directive = (
+            f"You are Aetherius AI, an advanced AI Operating Environment in the '{workspace_name}' workspace.\n"
+            "CORE OPERATIONAL DIRECTIVES:\n"
+            "- CONTINUOUS REASONING: Maintain complete conversational awareness. When the user refines, filters, or follows up on previous turns, directly continue from the active discussion without requesting restatements.\n"
+            "- DYNAMIC CALIBRATION: Match answer depth to the query's complexity. Deliver crisp, concise answers for quick questions and thorough, structured, header-organized deep dives for complex topics.\n"
+            "- EVIDENCE-BACKED FACTUALITY: Strictly base assertions on provided document excerpts, verified web search results, or validated tool observations. Never hallucinate data.\n"
+            "- CONCRETE EXAMPLES: Illustrate concepts with clear, runnable code snippets or structured analogies whenever applicable.\n"
+            "- CITATIONS: When external knowledge or live search results are provided, cite sources accurately."
         )
-        if workspace_instructions:
-            system_sections.append(f"### [WORKSPACE ROLE & COGNITIVE GUIDELINES]:\n{workspace_instructions}")
+        system_sections.append(base_directive)
 
-        # 3. Add Personalized Long-Term Memory Section
+        if workspace_instructions:
+            system_sections.append(f"### [WORKSPACE ROLE DIRECTIVES]:\n{workspace_instructions}")
+
+        # 2. User & Environment Context Layer
+        env_lines = []
+        if environment_context:
+            for k, v in environment_context.items():
+                env_lines.append(f"- {k.replace('_', ' ').title()}: {v}")
+        if user_preferences:
+            for k, v in user_preferences.items():
+                env_lines.append(f"- Preference ({k}): {v}")
+
+        if env_lines:
+            system_sections.append(f"### [ENVIRONMENT & USER CONTEXT]:\n" + "\n".join(env_lines))
+
+        # 3. Active Task & Project Context Layer
+        if task_context:
+            task_desc = f"Objective: {task_context.get('objective', 'Active Task')}\nStatus: {task_context.get('status', 'running')}\nCurrent Step: {task_context.get('current_step', 'in progress')}"
+            system_sections.append(f"### [ACTIVE TASK CONTEXT]:\n{task_desc}")
+
+        if project_context:
+            proj_desc = f"Project: {project_context.get('name', 'Active Workspace')}\nActive Files: {project_context.get('files', [])}"
+            system_sections.append(f"### [PROJECT CONTEXT]:\n{proj_desc}")
+
+        # 4. Memory Context Layer (Semantic & Episodic)
         if memories and len(memories) > 0:
             mem_lines = []
             for m in memories:
-                m_type = m.memory_type.upper() if hasattr(m, 'memory_type') else 'FACT'
-                m_content = m.content if hasattr(m, 'content') else str(m)
+                m_type = m.memory_type.upper() if hasattr(m, "memory_type") else "FACT"
+                m_content = m.content if hasattr(m, "content") else str(m)
                 mem_lines.append(f"- [{m_type}] {m_content}")
-            
-            mem_text = "\n".join(mem_lines)
             system_sections.append(
-                f"### [USER PROFILE & LONG-TERM MEMORY]:\n"
-                f"{mem_text}\n"
-                f"ADAPTATION DIRECTIVE: Seamlessly adapt your answers, tone, language, and formatting to reflect these user preferences and facts naturally without explicitly announcing 'According to my memory' unless directly asked."
+                f"### [USER PROFILE & MEMORY RECALL]:\n"
+                + "\n".join(mem_lines)
+                + "\n(Seamlessly adapt tone, constraints, and preferences without explicitly announcing recall unless asked.)"
             )
+
+        # 5. Tool Context Layer
+        if tool_definitions and len(tool_definitions) > 0:
+            tool_summaries = [f"- `{t.get('name')}`: {t.get('description')}" for t in tool_definitions]
+            system_sections.append(f"### [AVAILABLE SANDBOX TOOLS]:\n" + "\n".join(tool_summaries))
 
         full_system_prompt = "\n\n".join(system_sections)
         system_tokens = cls.estimate_tokens(full_system_prompt)
 
-        # 4. Assemble Knowledge Base (RAG) Context
+        # 6. Knowledge Context (RAG)
         rag_text = ""
         rag_tokens = 0
         if rag_chunks and len(rag_chunks) > 0:
             rag_parts = []
             for chunk, score in rag_chunks:
-                fn = chunk.chunk_metadata.get("filename", "Doc")
+                fn = chunk.chunk_metadata.get("filename", "Document")
                 rag_parts.append(f"[Source: {fn} (similarity: {score})]:\n{chunk.content}")
             rag_text = "Retrieved Document Knowledge:\n" + "\n\n".join(rag_parts)
             rag_tokens = cls.estimate_tokens(rag_text)
 
-        # 5. Assemble Web Search Context with Frontier Footnote Indexing
+        # 7. Web Intelligence Context
         web_text = ""
         web_tokens = 0
         if web_results and len(web_results) > 0:
@@ -91,16 +128,21 @@ class ContextEngine:
             web_text = "### [LIVE REAL-TIME WEB SEARCH & DEEP RETRIEVAL DATA]:\n" + "\n\n".join(web_parts)
             web_tokens = cls.estimate_tokens(web_text)
 
-        # 6. Fit Conversation History within remaining budget
+        # 8. Accumulated Constraints Injection
+        constraint_text = ""
+        if accumulated_constraints:
+            c_lines = [f"- {k.replace('_', ' ').title()}: `{v}`" for k, v in accumulated_constraints.items()]
+            constraint_text = "### [ACCUMULATED MULTI-TURN CONSTRAINTS]:\n" + "\n".join(c_lines)
+
+        # 9. Fit Conversation History within remaining token budget
         user_msg_tokens = cls.estimate_tokens(current_user_message)
-        consumed_so_far = system_tokens + rag_tokens + web_tokens + user_msg_tokens
-        history_budget = max(500, available_prompt_tokens - consumed_so_far)
+        consumed_so_far = system_tokens + rag_tokens + web_tokens + user_msg_tokens + cls.estimate_tokens(constraint_text)
+        history_budget = max(400, available_prompt_tokens - consumed_so_far)
 
         fitted_history: List[Dict[str, str]] = []
         current_history_tokens = 0
 
         if chat_history:
-            # Add from newest to oldest until budget is exhausted
             for msg in reversed(chat_history):
                 m_tokens = cls.estimate_tokens(msg.get("content", ""))
                 if current_history_tokens + m_tokens <= history_budget:
@@ -109,8 +151,10 @@ class ContextEngine:
                 else:
                     break
 
-        # 7. Construct Final Augmented User Prompt with Strict Grounding Directive
+        # 10. Construct Final Turn Payload
         augmented_user_parts = []
+        if constraint_text:
+            augmented_user_parts.append(constraint_text)
         if rag_text:
             augmented_user_parts.append(rag_text)
         if web_text:
@@ -118,7 +162,7 @@ class ContextEngine:
             augmented_user_parts.append(
                 "STRICT GROUNDING DIRECTIVE:\n"
                 "1. Answer using the live web search data and full article excerpts provided above.\n"
-                "2. When stating facts, numbers, or conclusions, add inline bracketed footnotes corresponding to the source index, e.g. [1], [2].\n"
+                "2. When stating facts or conclusions, add inline footnotes corresponding to the source index, e.g. [1], [2].\n"
                 "3. Conclude with a clean '### Sources & Evidence' section listing the source titles and markdown hyperlinks."
             )
 
@@ -140,6 +184,6 @@ class ContextEngine:
                 "rag_tokens": rag_tokens,
                 "web_tokens": web_tokens,
                 "total_estimated_tokens": total_estimated_tokens,
-                "context_limit": model_context_limit
+                "context_limit": model_context_limit,
             }
         }
