@@ -174,5 +174,23 @@ class ModelManager:
         async for token in provider.generate_stream(messages, model_name, temperature, max_tokens):
             yield token
 
+    async def stream_response(
+        self,
+        messages: List[Dict[str, Any]],
+        model_name: str = "llama3.2:3b",
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        requested_mode: str = "manual",
+    ) -> AsyncGenerator[str, None]:
+        """Streaming generator alias for generate_stream."""
+        async for token in self.generate_stream(
+            messages=messages,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            requested_mode=requested_mode,
+        ):
+            yield token
+
 
 model_manager = ModelManager()

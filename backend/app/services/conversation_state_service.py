@@ -419,7 +419,7 @@ class ConversationStateService:
                 canonical = f"Which {active_subject or active_topic} models or tools run locally?"
             elif lower_q in ["do it", "do it.", "proceed"]:
                 canonical = f"Proceed with {active_subject or active_topic}."
-            elif (curr_constraints or is_short) and (active_subject or active_topic) and (active_subject or active_topic).lower() not in canonical.lower():
+            elif (history or (state and state.topic)) and (curr_constraints or is_short) and (active_subject or active_topic) and (active_subject or active_topic).lower() not in canonical.lower():
                 canonical = f"{active_topic or active_subject} ({query.strip()})"
 
         # Structured ResolvedEntity objects
