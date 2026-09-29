@@ -150,13 +150,13 @@ class ConversationStateService:
     def extract_entities(cls, text: str) -> Dict[str, Dict[str, Any]]:
         """
         Domain-agnostic entity and technical concept extractor.
-        Identifies AI models, libraries, languages, tools, frameworks, metrics, and named entities.
+        Identifies organizations/companies, people, products, AI models, languages, tools, frameworks, and concepts.
         """
         entities: Dict[str, Dict[str, Any]] = {}
         if not text:
             return entities
 
-        # 1. AI Models pattern (e.g., Qwen 3, Llama 3.2, DeepSeek R1, GPT-4o, Claude 3.5, Mistral)
+        # 1. AI Models pattern (e.g., Qwen 3, Llama 3.2, DeepSeek R1, GPT-4o, Claude 3.5, Mistral, Phi)
         model_matches = re.findall(
             r"\b(qwen\s*[\d\.\-]+[a-z]*|llama\s*[\d\.\-]+[a-z]*|deepseek\s*[\w\.\-]+|gpt\-?[\w\.\-]+|claude\s*[\d\.\-]+|gemini\s*[\d\.\-]+|mistral\s*[\w\.\-]+|phi\s*[\d\.\-]+)\b",
             text,
@@ -164,12 +164,11 @@ class ConversationStateService:
         )
         for m in model_matches:
             name = m.strip()
-            # Normalize title
             formatted = " ".join([part.capitalize() if not part.isdigit() else part for part in name.split()])
             entities[formatted] = {"type": "model", "mentions": 1}
 
-        # 2. General concepts (AI, Artificial Intelligence, Machine Learning, Deep Learning)
-        if re.search(r"\b(artificial intelligence|ai)\b", text, flags=re.IGNORECASE):
+        # 2. General concepts (AI, Machine Learning, Deep Learning, etc.)
+        if re.search(r"\b(artificial intelligence|machine learning|deep learning|computer vision|nlp|natural language processing)\b", text, flags=re.IGNORECASE):
             entities["Artificial Intelligence"] = {"type": "concept", "mentions": 1}
 
         # 3. Known programming languages, systems, and tools
@@ -193,19 +192,51 @@ class ConversationStateService:
                     formatted_name = "pgvector"
                 entities[formatted_name] = {"type": "technology", "mentions": 1}
 
-        # 4. Capitalized multi-word or single-word entities (excluding common stopwords and hardware metrics)
+        # 4. Known/Pattern-based Organizations & Companies
+        known_orgs = [
+            "erbrains", "erbrains it solutions", "google", "microsoft", "apple", "openai", "anthropic",
+            "meta", "nvidia", "amazon", "tesla", "oracle", "ibm", "intel", "salesforce", "adobe",
+            "snowflake", "databricks", "stripe", "uber", "spacex", "deepmind", "alibaba", "bytedance",
+            "github", "gitlab", "huggingface", "mistral ai", "stability ai"
+        ]
+        for org in known_orgs:
+            if re.search(rf"\b{re.escape(org)}\b", lower_text):
+                formatted_org = "ERBrains" if org.startswith("erbrains") else " ".join(w.capitalize() for w in org.split())
+                entities[formatted_org] = {"type": "organization", "mentions": 1}
+
+        # Match phrases like "XYZ company", "ABC Technologies", "DEF Solutions", "GHI Corp", "JKL Inc", "MNO Ltd"
+        org_pattern = r"\b([A-Z][a-zA-Z0-9_\-]+(?:\s+[A-Z][a-zA-Z0-9_\-]+)*)\s+(company|technologies|solutions|technologies pvt ltd|solutions pvt ltd|inc|corp|corporation|ltd|pvt ltd|llc|labs|enterprises|firm|consulting)\b"
+        for match in re.finditer(org_pattern, text, re.IGNORECASE):
+            org_name = match.group(1).strip()
+            if len(org_name) > 1 and org_name.lower() not in ["the", "a", "an", "this", "that"]:
+                entities[org_name] = {"type": "organization", "mentions": 1}
+
+        # 5. People names detection (e.g. after 'who is', 'CEO of', 'founder of', 'architect', 'lead')
+        person_patterns = [
+            r"\b(?:who\s+is|ceo\s+(?:of\s+)?|founder\s+(?:of\s+)?|created\s+by\s+|architect\s+|director\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b",
+            r"\b(Vinay(?:\s+[A-Z][a-z]+)*)\b",
+        ]
+        for p_pat in person_patterns:
+            for match in re.finditer(p_pat, text):
+                p_name = match.group(1).strip()
+                if p_name and p_name not in entities:
+                    entities[p_name] = {"type": "person", "mentions": 1}
+
+        # 6. Capitalized multi-word or single-word entities (excluding common stopwords and hardware metrics)
         stopwords = {
             "The", "A", "An", "What", "How", "Why", "When", "Where", "Which", "Who", "Can", "Could",
             "Tell", "Give", "Explain", "RAM", "VRAM", "CPU", "GPU", "SSD", "HDD", "GB", "MB", "TB",
             "OS", "DB", "SQL", "API", "AI", "Is", "Are", "In", "On", "At", "For", "With", "About",
-            "Here", "There", "Find", "Show", "Explain", "Tell", "Top", "Cloud", "Alibaba"
+            "Here", "There", "Find", "Show", "Explain", "Tell", "Top", "Cloud", "Does", "Do", "Company"
         }
         raw_words = text.split()
         for idx, w in enumerate(raw_words):
             cleaned = re.sub(r"[^\w\-]", "", w)
             if cleaned and cleaned[0].isupper() and cleaned not in stopwords and len(cleaned) > 2:
                 if cleaned not in entities:
-                    entities[cleaned] = {"type": "named_entity", "mentions": 1}
+                    # If followed by 'company' or 'solutions', categorize as organization
+                    is_org = idx + 1 < len(raw_words) and re.sub(r"[^\w\-]", "", raw_words[idx+1]).lower() in ["company", "solutions", "technologies", "inc", "corp", "ltd"]
+                    entities[cleaned] = {"type": "organization" if is_org else "named_entity", "mentions": 1}
 
         return entities
 
@@ -298,11 +329,14 @@ class ConversationStateService:
         references: Dict[str, str] = dict(state.references) if state and state.references else {}
         entity_stack: List[str] = []
         prior_entity_stack: List[str] = []
+        prior_user_entity_stack: List[str] = []
+        user_entity_stack: List[str] = []
         entity_types: Dict[str, str] = {}
 
         if history:
             for turn in history:
-                if turn.get("role") == "user":
+                is_user = turn.get("role") == "user"
+                if is_user:
                     accumulated_constraints.update(cls.extract_constraints(turn.get("content", "")))
                 # Collect entities in chronological order
                 t_entities = cls.extract_entities(turn.get("content", ""))
@@ -311,8 +345,17 @@ class ConversationStateService:
                         entity_stack.remove(ent_name)
                     if ent_name in prior_entity_stack:
                         prior_entity_stack.remove(ent_name)
+                    if is_user:
+                        if ent_name in prior_user_entity_stack:
+                            prior_user_entity_stack.remove(ent_name)
+                        if ent_name in user_entity_stack:
+                            user_entity_stack.remove(ent_name)
+
                     entity_stack.append(ent_name)
                     prior_entity_stack.append(ent_name)
+                    if is_user:
+                        prior_user_entity_stack.append(ent_name)
+                        user_entity_stack.append(ent_name)
                     entity_types[ent_name] = ent_info.get("type", "named_entity")
 
         curr_constraints = cls.extract_constraints(query)
@@ -323,23 +366,37 @@ class ConversationStateService:
         for ent_name, ent_info in curr_entities.items():
             if ent_name in entity_stack:
                 entity_stack.remove(ent_name)
+            if ent_name in user_entity_stack:
+                user_entity_stack.remove(ent_name)
             entity_stack.append(ent_name)
+            user_entity_stack.append(ent_name)
             entity_types[ent_name] = ent_info.get("type", "named_entity")
 
         # Determine active topic and subject with model/technology priority
         active_topic = state.topic if state and state.topic else None
         active_subject = None
 
-        # If query has pronouns or is a short/elliptical follow-up, referent is the PRIOR entity
-        prior_priority_entities = [e for e in prior_entity_stack if entity_types.get(e) in ["model", "technology", "concept"]]
-        if (has_pronoun or is_short or has_pro_form) and prior_priority_entities:
-            active_subject = prior_priority_entities[-1]
-        elif (has_pronoun or is_short or has_pro_form) and prior_entity_stack:
-            active_subject = prior_entity_stack[-1]
+        # Priority resolution:
+        # If the user is asking with a pronoun (it/its/this/that) or short follow-up, referent is the PRIOR entity from history
+        priority_types = ["model", "technology", "organization", "person", "product", "concept"]
+        prior_user_priority = [e for e in prior_user_entity_stack if entity_types.get(e) in priority_types]
+        prior_all_priority = [e for e in prior_entity_stack if entity_types.get(e) in priority_types]
+        user_priority = [e for e in user_entity_stack if entity_types.get(e) in priority_types]
+
+        if (has_pronoun or is_short or has_pro_form):
+            if prior_user_priority:
+                active_subject = prior_user_priority[-1]
+            elif prior_all_priority:
+                active_subject = prior_all_priority[-1]
+            elif prior_entity_stack:
+                active_subject = prior_entity_stack[-1]
+            elif user_priority:
+                active_subject = user_priority[-1]
         else:
-            priority_entities = [e for e in entity_stack if entity_types.get(e) in ["model", "technology", "concept"]]
-            if priority_entities:
-                active_subject = priority_entities[-1]
+            if user_priority:
+                active_subject = user_priority[-1]
+            elif prior_all_priority:
+                active_subject = prior_all_priority[-1]
             elif entity_stack:
                 active_subject = entity_stack[-1]
 

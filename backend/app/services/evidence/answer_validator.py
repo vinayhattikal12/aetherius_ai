@@ -109,6 +109,26 @@ class AnswerValidationEngine:
         return round(min(1.0, max(0.2, overlap_ratio * 1.5)), 2)
 
     @classmethod
+    def validate_leakage(cls, text: str) -> Tuple[bool, List[str]]:
+        """Checks for accidental leakage of internal system prompts, brackets, or memory headers."""
+        issues = []
+        forbidden_markers = [
+            "[CONVERSATION CONTEXT",
+            "[ENVIRONMENT & USER CONTEXT",
+            "[USER PROFILE &",
+            "[AVAILABLE SANDBOX TOOLS",
+            "[LIVE WEB SEARCH RESULTS",
+            "[USER CONSTRAINTS",
+            "search.aetherius.ai",
+            "Active Conversation Topic:",
+            "Turn Relation Mode:"
+        ]
+        for marker in forbidden_markers:
+            if marker.lower() in text.lower():
+                issues.append(f"Response contains internal system diagnostic marker '{marker}'.")
+        return len(issues) == 0, issues
+
+    @classmethod
     def validate_response(
         cls,
         response_text: str,
@@ -123,9 +143,10 @@ class AnswerValidationEngine:
 
         c_ok, c_issues = cls.validate_constraints(response_text, active_constraints)
         cit_ok, cit_issues = cls.validate_citations(response_text, len(sources))
+        leak_ok, leak_issues = cls.validate_leakage(response_text)
         grounding = cls.calculate_grounding_score(response_text, chunks)
 
-        all_issues = c_issues + cit_issues
+        all_issues = c_issues + cit_issues + leak_issues
         is_valid = len(all_issues) == 0
 
         repair_instruction = None

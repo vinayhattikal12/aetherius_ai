@@ -38,13 +38,11 @@ class WebSearchService:
         raw_results = await cls._orchestrator.execute_search(clean_query, max_results=max_results + 2)
 
         if not raw_results:
-            # Fallback informational entry
-            raw_results.append(WebSearchResultItem(
-                title=f"Web Intelligence: {query}",
-                url=f"https://search.aetherius.ai?q={clean_query}",
-                snippet=f"Developer reference data and public specifications for '{query}'.",
-                source_domain="aetherius.ai"
-            ))
+            return WebSearchResponse(
+                query=query,
+                results=[],
+                summary=f"No web sources found for '{query}'"
+            )
 
         # 1. Parallel Deep Scraping for top candidates
         if deep_scrape:

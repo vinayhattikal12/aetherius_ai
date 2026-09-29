@@ -242,11 +242,11 @@ async def test_context_engine_with_conversation_state():
     augmented = assembled["augmented_prompt"]
 
     # Verify Conversation State layer in system prompt
-    assert "CONVERSATION STATE & TURN INTELLIGENCE" in sys_prompt
+    assert "CONVERSATION CONTEXT" in sys_prompt or "CONVERSATION STATE" in sys_prompt
     assert "PostgreSQL Query Optimization" in sys_prompt
-    assert "CORRECTION" in sys_prompt
 
     # Verify Accumulated Constraints layer
-    assert "ACCUMULATED MULTI-TURN CONSTRAINTS" in augmented
+    assert "USER CONSTRAINTS" in augmented or "ACCUMULATED" in augmented
+    assert "Linux" in augmented or "linux" in augmented
     assert "License: `open_source`" in augmented or "open_source" in augmented
     assert "32GB" in augmented

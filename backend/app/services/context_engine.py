@@ -55,7 +55,8 @@ class ContextEngine:
             "- NATURAL CONVERSATIONAL RESPONSE: Output only the direct, helpful answer to the user's message. Never output internal headers, debug labels, or template headings like 'Active Conversation Topic:', 'Location Context:', 'Response:', 'Relevant Information:', 'Next Steps:', 'RAG Knowledge:', 'Solution & Technical Deep Dive:', or 'Turn Relation:'.\n"
             "- DYNAMIC CALIBRATION: Give concise answers for simple questions and thorough, structured responses with markdown or code blocks for complex tasks.\n"
             "- NO ASSUMED LOCATION: Never mention geographical location or local context unless the user explicitly asks about location-specific details.\n"
-            "- FACTUAL & GROUNDED: Use any provided knowledge seamlessly without announcing internal retrieval mechanisms."
+            "- STRICT FACTUAL GROUNDING & ZERO HALLUCINATION: When answering questions about specific companies, organizations, people, products, or technologies, only state verified facts supported by evidence or standard established knowledge. If specific corporate facts (founding year, exact founder list, revenue, ownership) are not provided or verified, state that the information is unverified rather than guessing or inventing years/roles.\n"
+            "- USER PROFILE MEMORY ISOLATION: Information in user memory represents the user's personal context and profile (e.g. where they work, what their role is, their personal preferences). NEVER confuse the user's personal background with public company facts or ownership. An employee or architect working at an organization is NOT the founder, owner, or public entity itself. Never fabricate corporate history from user profile memories."
         )
         system_sections.append(base_directive)
 
@@ -127,7 +128,7 @@ class ContextEngine:
                 m_content = m.content if hasattr(m, "content") else str(m)
                 mem_lines.append(f"- [{m_type}] {m_content}")
             system_sections.append(
-                f"[USER PROFILE & MEMORY RECALL (Apply silently without announcing)]:\n"
+                f"[USER PROFILE & PERSONAL MEMORY (Personal user context only - Never extrapolate personal background into public corporate facts or company leadership)]:\n"
                 + "\n".join(mem_lines)
             )
 

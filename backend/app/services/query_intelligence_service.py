@@ -214,9 +214,13 @@ class QueryIntelligenceService:
             current_topic=base_topic
         )
 
-        # 3. Extract named entities
+        # 3. Extract named entities with typing
         extracted_entities_dict = ConversationStateService.extract_entities(user_message)
         extracted_entities = list(extracted_entities_dict.keys())
+        has_real_world_entity = any(
+            info.get("type") in ["organization", "person", "named_entity"]
+            for info in extracted_entities_dict.values()
+        )
 
         # 4. Intent Centroids Cosine Proximity
         query_emb = await EmbeddingService.embed_text(canonical)
@@ -241,10 +245,25 @@ class QueryIntelligenceService:
             scores.get("deep_reasoning", 0) > 0.60
             or any(k in lower_c for k in ["step by step", "proof", "derive", "algorithm", "trade-off", "why", "root cause"])
         )
-        # Search is triggered only for genuinely real-time / current inquiries
+
+        # Entity overview intent detection (factual query about a company, person, or real-world organization)
+        is_entity_query = (
+            has_real_world_entity
+            and any(k in lower_c for k in ["tell me about", "who is", "what is", "overview", "founded", "ceo", "company", "services", "products", "what does", "where is"])
+            and not any(k in lower_c for k in ["loop", "function", "variable", "class in", "syntax", "algorithm", "data structure"])
+        )
+
+        # Search is triggered for real-time/temporal queries or real-world entity factual overviews
         is_search = (
-            (scores.get("web_search", 0) > 0.60 or any(k in lower_c for k in ["latest", "current", "today", "yesterday", "news", "recent", "who won", "weather", "released", "launch"]))
-            and not (lower_c.startswith("what is") and not any(t in lower_c for t in ["latest", "today", "yesterday", "current", "new"]))
+            (
+                scores.get("web_search", 0) > 0.60
+                or any(k in lower_c for k in ["latest", "current", "today", "yesterday", "news", "recent", "who won", "weather", "released", "launch"])
+                or is_entity_query
+            )
+            and not (
+                (lower_c.startswith("what is") or lower_c.startswith("explain"))
+                and any(k in lower_c for k in ["loop", "recursion", "oop", "polymorphism", "array", "linked list", "binary search", "async", "promise", "interface"])
+            )
         )
         is_fast = scores.get("fast_lookup", 0) > 0.70 and len(normalized.split()) <= 3 and not is_code and not is_search and not is_reasoning
 
@@ -252,7 +271,9 @@ class QueryIntelligenceService:
 
         # Composite Intents
         composite = []
-        if is_search:
+        if is_entity_query:
+            composite.append("entity_overview")
+        if is_search and not is_entity_query:
             composite.append("current_information" if "today" in lower_c or "yesterday" in lower_c or "latest" in lower_c else "web_search")
         if is_code:
             composite.append("code_generation")
@@ -263,7 +284,8 @@ class QueryIntelligenceService:
         if "compare" in lower_c or "versus" in lower_c or turn_type == TurnType.COMPARISON:
             composite.append("comparison")
         if scores.get("definition", 0) > 0.55 or lower_c.startswith("what is") or lower_c.startswith("explain"):
-            composite.append("definition" if lower_c.startswith("what is") else "explanation")
+            if not is_entity_query:
+                composite.append("definition" if lower_c.startswith("what is") else "explanation")
         if not composite:
             composite.append("general_question")
 
