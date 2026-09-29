@@ -143,16 +143,22 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=4.0)) as client:
+        # Optimize context window size for fast CPU inference and avoid memory exhaustion
+        num_ctx = 4096 if any(k in target_model.lower() for k in ["14b", "8b", "7b"]) else 8192
+        timeout = httpx.Timeout(240.0, connect=20.0, read=240.0, write=30.0)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
             res = await client.post(
                 f"{self.base_url}/api/chat",
                 json={
                     "model": target_model,
                     "messages": clean_messages,
                     "stream": False,
+                    "keep_alive": "5m",
                     "options": {
                         "temperature": temperature,
-                        "num_predict": max_tokens
+                        "num_predict": max_tokens,
+                        "num_ctx": num_ctx,
                     }
                 }
             )
@@ -179,7 +185,11 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=4.0)) as client:
+        # Optimize context window size for fast CPU inference and avoid memory exhaustion
+        num_ctx = 4096 if any(k in target_model.lower() for k in ["14b", "8b", "7b"]) else 8192
+        timeout = httpx.Timeout(300.0, connect=20.0, read=300.0, write=30.0)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",
@@ -187,9 +197,11 @@ class OllamaProvider(BaseModelProvider):
                     "model": target_model,
                     "messages": clean_messages,
                     "stream": True,
+                    "keep_alive": "5m",
                     "options": {
                         "temperature": temperature,
-                        "num_predict": max_tokens
+                        "num_predict": max_tokens,
+                        "num_ctx": num_ctx,
                     }
                 }
             ) as response:

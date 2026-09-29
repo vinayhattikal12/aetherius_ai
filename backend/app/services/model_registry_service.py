@@ -379,7 +379,12 @@ class ModelRegistryService:
             # For local models, synchronize with verified local Ollama downloads
             if m.is_local:
                 if installed_tags:
-                    tag_matches = any(t == m.name or t.startswith(m.name.split(':')[0]) for t in installed_tags)
+                    tag_matches = any(
+                        t == m.name
+                        or t == f"{m.name}:latest"
+                        or (":" not in m.name and t.startswith(f"{m.name}:"))
+                        for t in installed_tags
+                    )
                     m.is_installed = tag_matches
                 else:
                     m.is_installed = False

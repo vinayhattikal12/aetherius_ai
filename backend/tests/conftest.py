@@ -54,7 +54,7 @@ async def setup_test_db():
 @pytest_asyncio.fixture(scope="function")
 async def async_client():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", timeout=60.0) as client:
         yield client
 
 
