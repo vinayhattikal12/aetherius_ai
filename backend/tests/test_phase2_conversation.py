@@ -95,7 +95,7 @@ async def test_generic_anaphora_and_reference_resolution():
     ]
 
     # Test pronoun 'it'
-    canonical, topic, refs, constraints = ConversationStateService.resolve_references(
+    canonical, topic, refs, constraints, *rest = ConversationStateService.resolve_references(
         query="how to optimize it for high throughput?",
         history=history,
         state=None
@@ -105,7 +105,7 @@ async def test_generic_anaphora_and_reference_resolution():
     assert "how to optimize it for high throughput" in canonical.lower() or "optimize" in canonical.lower()
 
     # Test elliptical query 'in Python?'
-    canonical_py, topic_py, refs_py, constraints_py = ConversationStateService.resolve_references(
+    canonical_py, topic_py, refs_py, constraints_py, *rest = ConversationStateService.resolve_references(
         query="in python?",
         history=history,
         state=None
@@ -114,7 +114,7 @@ async def test_generic_anaphora_and_reference_resolution():
     assert constraints_py.get("language") == "python"
 
     # Test comparative query
-    canonical_comp, _, _, _ = ConversationStateService.resolve_references(
+    canonical_comp, _, _, _, *rest = ConversationStateService.resolve_references(
         query="compare it with redis cache",
         history=history,
         state=None

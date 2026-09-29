@@ -6,14 +6,15 @@ from backend.app.models.model_registry import ModelRegistry
 from backend.app.models.settings import UserSettings
 from backend.app.models.system_profile import SystemProfile
 from backend.app.schemas.router import RouterEvaluationRequest, RouterEvaluationResponse
+from backend.app.schemas.intelligence import ResolvedTask
 from backend.app.core.logging import logger
 
 
 class ModelRouter:
     """
     Sub-millisecond Intelligent Intent Analyzer and Model Router.
-    Selects the optimal execution model based on query complexity, workspace role,
-    installed local models, and real-time visual / reasoning requirements.
+    Selects the optimal execution model based on resolved task requirements,
+    conversational complexity, workspace role, and system compute capability.
     """
 
     @staticmethod
@@ -23,7 +24,6 @@ class ModelRouter:
         if p.startswith("/image"):
             return True
 
-        # Explicit command starters
         if any(p.startswith(cmd) for cmd in [
             "draw", "paint", "sketch", "visualize", "illustrate", "render",
             "generate image", "generate an image", "generate its image", "generate a picture",
@@ -31,7 +31,6 @@ class ModelRouter:
         ]):
             return True
 
-        # Regex pattern matching visual intent anywhere in the sentence
         patterns = [
             r"\b(with|using|having|including)\s+(the\s+)?(help\s+of\s+)?(an?\s+)?(image|picture|diagram|illustration|photo|visual|graphic|chart)\b",
             r"\b(generate|create|draw|make|show|render|provide)\s+(an?|the|its|this|a)\s+(image|picture|diagram|illustration|photo|visual|graphic|chart)\b",
@@ -48,8 +47,12 @@ class ModelRouter:
     async def evaluate_routing(
         cls,
         db: AsyncSession,
-        request: RouterEvaluationRequest
+        request: RouterEvaluationRequest,
+        resolved_task: Optional[ResolvedTask] = None
     ) -> RouterEvaluationResponse:
+        """
+        Routes query to the most capable, available model based on the Authoritative ResolvedTask.
+        """
         # 1. Fetch User Settings & System Hardware Profile
         settings_res = await db.execute(select(UserSettings))
         user_settings = settings_res.scalars().first()
@@ -63,27 +66,31 @@ class ModelRouter:
         models_res = await db.execute(select(ModelRegistry))
         models = models_res.scalars().all()
 
-        prompt = request.prompt.lower()
         slug = (request.workspace_slug or "general").lower()
 
-        # 3. Semantic Query Intelligence Analysis
-        from backend.app.services.query_intelligence_service import QueryIntelligenceService
-        q_analysis = await QueryIntelligenceService.analyze_query(
-            user_message=request.prompt,
-            workspace_slug=slug
-        )
+        # 3. Use authoritative ResolvedTask or analyze if not provided
+        if resolved_task:
+            is_visual = resolved_task.is_visual
+            is_coding = request.requires_coding or (resolved_task.domain == "programming") or (resolved_task.intent == "code_generation")
+            is_reasoning = request.requires_reasoning or (resolved_task.intent == "deep_reasoning") or (resolved_task.domain == "research")
+            is_fast = resolved_task.complexity <= 0.25 and not is_coding and not is_reasoning and not resolved_task.plan.requires_web_search
+            detected_intent = resolved_task.intent
+            complexity = resolved_task.complexity
+        else:
+            from backend.app.services.query_intelligence_service import QueryIntelligenceService
+            q_analysis = await QueryIntelligenceService.analyze_query(
+                user_message=request.prompt,
+                workspace_slug=slug
+            )
+            is_visual = q_analysis.is_visual
+            is_coding = request.requires_coding or q_analysis.is_code
+            is_reasoning = request.requires_reasoning or q_analysis.is_reasoning
+            is_fast = q_analysis.is_fast
+            detected_intent = q_analysis.primary_intent
+            complexity = q_analysis.complexity
 
-        is_visual = q_analysis.is_visual
-        is_coding = request.requires_coding or q_analysis.is_code
-        is_reasoning = request.requires_reasoning or q_analysis.is_reasoning
-        is_fast = q_analysis.is_fast
-
-        detected_intent = q_analysis.primary_intent
-        complexity = q_analysis.complexity
-
-        if q_analysis.primary_intent == "multimodal_hybrid":
-            routing_badge = "🎨 Autonomous Visual & Technical Engine"
-        elif is_visual:
+        # Set descriptive routing badge preserving true intent
+        if detected_intent == "multimodal_hybrid" or is_visual:
             routing_badge = "🎨 Autonomous Visual Illustration"
         elif is_coding:
             routing_badge = "💻 Qwen Coder Specialist"
@@ -91,18 +98,18 @@ class ModelRouter:
             routing_badge = "🧠 DeepSeek R1 Step-by-Step Reasoning"
         elif is_fast:
             routing_badge = "⚡ Sub-Second Ultra-Fast Engine"
+        elif detected_intent in ["definition", "explanation"]:
+            routing_badge = "📖 Concise Universal Knowledge Engine"
+        elif detected_intent in ["current_information", "web_search"]:
+            routing_badge = "🌐 Live Grounded Search Engine"
         else:
             routing_badge = "⚡ Fast Universal Engine"
-
-            detected_intent = "fast_lookup"
-            complexity = 0.2
-            routing_badge = "⚡ Sub-Second Ultra-Fast Engine"
 
         # 4. Check available Ollama installed tags and API keys
         import os
         from backend.app.services.providers.model_manager import model_manager
         installed_tags = await model_manager.ollama.get_installed_tags() if await model_manager.ollama.is_available() else []
-        has_cloud_keys = bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("GROQ_API_KEY"))
+        has_cloud_keys = bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("GOOGLE_API_KEY"))
 
         # Score Candidate Models
         candidate_models: List[Tuple[ModelRegistry, float]] = []
@@ -169,7 +176,7 @@ class ModelRouter:
         fallback_id = candidate_models[1][0].name if len(candidate_models) > 1 else None
 
         return RouterEvaluationResponse(
-            selected_model_id=chosen_model.name, # Use direct name/tag for zero-overhead execution
+            selected_model_id=chosen_model.name,
             selected_model_name=chosen_model.display_name,
             execution_mode=execution_mode,
             privacy_compliant=(privacy_mode != "LOCAL_ONLY" or chosen_model.is_local),

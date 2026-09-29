@@ -3,7 +3,10 @@ import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse
 import httpx
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 from backend.app.schemas.web_search import WebSearchResultItem
 from backend.app.services.embedding_service import EmbeddingService
 from backend.app.core.logging import logger
@@ -160,6 +163,13 @@ class SourceEvidenceEngine:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code != 200 or not resp.text:
                     return None
+
+                if BeautifulSoup is None:
+                    # Clean regex fallback
+                    text_only = re.sub(r"<(script|style).*?>.*?</\1>", "", resp.text, flags=re.DOTALL | re.IGNORECASE)
+                    text_only = re.sub(r"<[^>]+>", " ", text_only)
+                    cleaned_text = re.sub(r"\s+", " ", text_only).strip()
+                    return cleaned_text[:2000] if len(cleaned_text) > 80 else None
 
                 soup = BeautifulSoup(resp.text, "html.parser")
 

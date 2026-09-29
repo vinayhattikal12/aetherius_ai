@@ -5,7 +5,10 @@ import urllib.parse
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import httpx
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 from duckduckgo_search import DDGS
 from backend.app.schemas.web_search import WebSearchResultItem
 from backend.app.core.logging import logger
@@ -58,7 +61,7 @@ class DuckDuckGoSearchProvider(BaseSearchProvider):
                         params={"q": clean_query},
                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                     )
-                    if resp.status_code == 200:
+                    if resp.status_code == 200 and BeautifulSoup:
                         soup = BeautifulSoup(resp.text, "html.parser")
                         result_divs = soup.find_all("div", class_="result")
                         for r in result_divs[:max_results]:

@@ -1,6 +1,14 @@
 import re
+import uuid
 from typing import Dict, Any, List, Optional, Tuple, Set
 from pydantic import BaseModel
+from backend.app.schemas.intelligence import (
+    ResolvedTask,
+    ExecutionContext,
+    TaskPlan,
+    ResolvedEntity,
+    InformationRequirement,
+)
 from backend.app.services.embedding_service import EmbeddingService
 from backend.app.services.conversation_state_service import ConversationStateService, TurnType
 from backend.app.core.logging import logger
@@ -25,12 +33,13 @@ class ContextualQueryAnalysis(BaseModel):
     primary_intent: str = "general_question"
     composite_intents: List[str] = []
     intent_scores: Dict[str, float] = {}
+    resolved_task: Optional[ResolvedTask] = None
 
 
 class QueryIntelligenceService:
     """
     Production-Grade Multi-Turn Query Intelligence, Generic Anaphora Resolver,
-    Constraint Extractor, and Composite Intent Classifier (ChatGPT/Claude/Gemini architecture).
+    Constraint Extractor, Composite Intent Classifier, and Task Plan Generator.
     """
 
     # Common Developer / General Orthographic Corrections & Shorthand
@@ -86,16 +95,19 @@ class QueryIntelligenceService:
         ),
         "web_search": (
             "latest current today news stock price weather live release update who won sports "
-            "trending market status recent events what happened"
+            "trending market status recent events what happened launched announced"
+        ),
+        "definition": (
+            "what is define meaning explain concept overview definition introduction describe"
         ),
         "fast_lookup": (
-            "hello hi quick define what is translate summarize synonym short spell check help"
+            "hello hi quick translate short spell check ping help"
         ),
         "comparison": (
             "compare differences versus trade-offs pros and cons which is better versus benchmark"
         ),
         "data_analysis": (
-            "calculate compute financial stats metrics growth interest rate aggregate average table"
+            "calculate compute financial stats metrics growth interest rate aggregate average table compound"
         ),
     }
 
@@ -122,123 +134,18 @@ class QueryIntelligenceService:
         return " ".join(normalized_tokens)
 
     @classmethod
-    def extract_constraints(cls, text: str) -> Dict[str, Any]:
-        """Extracts domain-agnostic user constraints (e.g. platform, license, temporal, budget)."""
-        constraints: Dict[str, Any] = {}
-        lower = text.lower()
-
-        # License constraints
-        if "open source" in lower or "foss" in lower:
-            constraints["license"] = "open_source"
-        elif "proprietary" in lower or "commercial" in lower:
-            constraints["license"] = "commercial"
-
-        # Platform / OS constraints
-        for os_name in ["windows", "linux", "macos", "mac", "ios", "android", "docker"]:
-            if re.search(rf"\b{os_name}\b", lower):
-                constraints["platform"] = os_name
-
-        # Memory / Hardware constraints
-        ram_match = re.search(r"(\d+)\s*(gb|mb|tb)\s*(ram|vram|memory)?", lower)
-        if ram_match:
-            constraints["hardware_ram"] = f"{ram_match.group(1)}{ram_match.group(2).upper()}"
-
-        # Temporal constraints
-        if "yesterday" in lower:
-            constraints["temporal"] = "yesterday"
-        elif "today" in lower:
-            constraints["temporal"] = "today"
-        elif "recently" in lower or "latest" in lower:
-            constraints["temporal"] = "latest"
-
-        # Execution mode constraints
-        if "local" in lower or "locally" in lower or "offline" in lower:
-            constraints["execution_mode"] = "local"
-        elif "cloud" in lower or "api" in lower:
-            constraints["execution_mode"] = "cloud"
-
-        return constraints
-
-    @classmethod
-    def resolve_anaphora(
-        cls,
-        query: str,
-        history: List[Dict[str, str]]
-    ) -> Tuple[str, Optional[str], Dict[str, Any]]:
-        """
-        Domain-Agnostic Multi-Turn Context & Anaphora Resolver:
-        Resolves pronouns ('it', 'them', 'that', 'this', 'the previous one', 'both'),
-        continuation queries ('compare them', 'which is faster', 'only open source', 'which support windows'),
-        and accumulates conversation constraints.
-        """
-        normalized = cls.normalize_text(query)
-        words = [w.lower() for w in re.findall(r"\b\w+\b", normalized)]
-        deictic_words = {
-            "it", "its", "this", "that", "these", "those", "above", "them", "again",
-            "there", "same", "here", "both", "one", "two", "fastest", "cheapest", "better", "compare"
-        }
-
-        has_deictic = any(w in deictic_words for w in words)
-        is_short = len(words) <= 7
-
-        # Extract accumulated constraints from current and previous user turns
-        accumulated_constraints = {}
-        for turn in history:
-            if turn.get("role") == "user":
-                turn_constraints = cls.extract_constraints(turn.get("content", ""))
-                accumulated_constraints.update(turn_constraints)
-
-        current_constraints = cls.extract_constraints(normalized)
-        accumulated_constraints.update(current_constraints)
-
-        extracted_topic: Optional[str] = None
-        extracted_user_query: Optional[str] = None
-
-        if (has_deictic or is_short or bool(current_constraints)) and history:
-            # 1. Search recent user queries for anchor subject
-            for turn in reversed(history):
-                if turn.get("role") == "user":
-                    u_text = turn.get("content", "").strip()
-                    if u_text and len(u_text) > 3 and u_text.lower() != normalized.lower():
-                        # Don't pick short qualifier queries as the root topic
-                        if len(u_text.split()) > 3:
-                            extracted_user_query = u_text
-                            break
-
-            # 2. Search assistant responses for topic headers
-            if not extracted_user_query:
-                for turn in reversed(history):
-                    if turn.get("role") == "assistant":
-                        content = turn.get("content", "").strip()
-                        if not content or content.startswith("🎨"):
-                            continue
-                        lines = [line.strip() for line in content.split("\n") if line.strip()]
-                        for line in lines:
-                            cleaned = re.sub(r"[#*`_]", "", line).strip()
-                            cleaned = re.sub(r"^(overview:|detailed analysis:|here is|regarding|real-time intelligence:)\s*", "", cleaned, flags=re.IGNORECASE).strip()
-                            if 3 < len(cleaned) < 120 and not cleaned.startswith("http") and not cleaned.startswith("["):
-                                extracted_topic = cleaned
-                                break
-                        if extracted_topic:
-                            break
-
-        base_topic = extracted_user_query or extracted_topic
-        canonical = normalized
-
-        if base_topic:
-            # Clean conversational conversational filler
-            clean_modifier = re.sub(
-                r"\b(i\s+am\s+asking|asking\s+for|what\s+about|how\s+about|can\s+you|please|tell\s+me)\b",
-                "",
-                normalized,
-                flags=re.IGNORECASE
-            ).strip()
-            clean_modifier = re.sub(r"^[,\s]+|[,\s]+$", "", clean_modifier)
-
-            if has_deictic or is_short or bool(current_constraints):
-                canonical = f"{base_topic} ({clean_modifier if clean_modifier else normalized})".strip()
-
-        return canonical, base_topic, accumulated_constraints
+    def detect_domain(cls, query: str, entities: List[str]) -> str:
+        """Detects domain for semantic context (AI, finance, programming, research, general)."""
+        lower = query.lower()
+        if any(k in lower for k in ["stock", "market", "ticker", "mover", "finance", "compound interest", "growth rate", "revenue", "financials", "small cap"]):
+            return "finance"
+        if any(k in lower for k in ["python", "rust", "typescript", "javascript", "code", "sql", "api", "function", "class", "debug", "endpoint", "database"]):
+            return "programming"
+        if any(k in lower for k in ["model", "llm", "qwen", "llama", "deepseek", "gpt", "claude", "gemini", "neural", "transformer", "artificial intelligence", "ai"]):
+            return "artificial_intelligence"
+        if any(k in lower for k in ["paper", "research", "arxiv", "theorem", "hypothesis"]):
+            return "research"
+        return "general"
 
     @classmethod
     def synthesize_visual_prompt(cls, subject: str, context_topic: Optional[str] = None, style_preset: Optional[str] = None) -> str:
@@ -279,21 +186,22 @@ class QueryIntelligenceService:
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         workspace_slug: str = "general",
-        conversation_state: Optional[Any] = None
+        conversation_state: Optional[Any] = None,
+        request_id: Optional[str] = None
     ) -> ContextualQueryAnalysis:
         """
         Generic End-to-End Query Semantic Intelligence:
         1. Normalizes typos and shorthand.
-        2. Resolves multi-turn anaphora and accumulated constraints across ANY domain using ConversationStateService.
-        3. Classifies conversational turn type (NEW_TOPIC, FOLLOW_UP, MODIFICATION, CLARIFICATION, CORRECTION, etc.).
+        2. Resolves multi-turn anaphora and accumulated constraints with Entity Recency Stack.
+        3. Classifies conversational turn type.
         4. Computes semantic intent embeddings.
-        5. Identifies composite intents.
+        5. Builds authoritative TaskPlan and ResolvedTask.
         """
         history = conversation_history or []
         normalized = cls.normalize_text(user_message)
 
-        # 1. Resolve anaphora, references, constraints and active topic
-        canonical, base_topic, references, constraints = ConversationStateService.resolve_references(
+        # 1. Resolve anaphora, references, constraints, and active entities
+        canonical, base_topic, references, constraints, resolved_entities = ConversationStateService.resolve_references(
             query=user_message,
             history=history,
             state=conversation_state
@@ -306,7 +214,7 @@ class QueryIntelligenceService:
             current_topic=base_topic
         )
 
-        # 3. Extract named entities and technologies
+        # 3. Extract named entities
         extracted_entities_dict = ConversationStateService.extract_entities(user_message)
         extracted_entities = list(extracted_entities_dict.keys())
 
@@ -327,22 +235,25 @@ class QueryIntelligenceService:
         )
         is_code = (
             scores.get("code_generation", 0) > 0.60
-            or any(k in lower_c for k in ["code", "function", "class", "python", "typescript", "javascript", "sql", "api", "bug", "refactor"])
+            or any(k in lower_c for k in ["code", "function", "class", "python", "typescript", "javascript", "sql", "api", "bug", "refactor", "unit test"])
         )
         is_reasoning = (
             scores.get("deep_reasoning", 0) > 0.60
             or any(k in lower_c for k in ["step by step", "proof", "derive", "algorithm", "trade-off", "why", "root cause"])
         )
+        # Search is triggered only for genuinely real-time / current inquiries
         is_search = (
-            scores.get("web_search", 0) > 0.58
-            or any(k in lower_c for k in ["latest", "current", "today", "news", "recent", "who won", "weather", "released", "launch"])
+            (scores.get("web_search", 0) > 0.60 or any(k in lower_c for k in ["latest", "current", "today", "yesterday", "news", "recent", "who won", "weather", "released", "launch"]))
+            and not (lower_c.startswith("what is") and not any(t in lower_c for t in ["latest", "today", "yesterday", "current", "new"]))
         )
-        is_fast = scores.get("fast_lookup", 0) > 0.65 and len(normalized.split()) <= 4
+        is_fast = scores.get("fast_lookup", 0) > 0.70 and len(normalized.split()) <= 3 and not is_code and not is_search and not is_reasoning
+
+        domain = cls.detect_domain(canonical, extracted_entities)
 
         # Composite Intents
         composite = []
         if is_search:
-            composite.append("web_search")
+            composite.append("current_information" if "today" in lower_c or "yesterday" in lower_c or "latest" in lower_c else "web_search")
         if is_code:
             composite.append("code_generation")
         if is_reasoning:
@@ -351,6 +262,8 @@ class QueryIntelligenceService:
             composite.append("visual_generation")
         if "compare" in lower_c or "versus" in lower_c or turn_type == TurnType.COMPARISON:
             composite.append("comparison")
+        if scores.get("definition", 0) > 0.55 or lower_c.startswith("what is") or lower_c.startswith("explain"):
+            composite.append("definition" if lower_c.startswith("what is") else "explanation")
         if not composite:
             composite.append("general_question")
 
@@ -358,6 +271,41 @@ class QueryIntelligenceService:
         complexity = round(min(0.95, max(0.15, (len(normalized.split()) * 0.03) + (0.3 if is_reasoning or is_code else 0.0))), 2)
 
         visual_prompt = cls.synthesize_visual_prompt(user_message, base_topic) if is_visual else None
+
+        # Build Task Plan
+        task_plan = TaskPlan(
+            requires_direct_model=True,
+            requires_web_search=is_search,
+            requires_rag=False,  # Set dynamically in pipeline if enabled
+            requires_tools=[],
+            requires_code_execution=is_code and ("run" in lower_c or "test" in lower_c or "execute" in lower_c),
+            requires_agent_react=False,
+            search_queries=[canonical] if is_search else []
+        )
+
+        if any(k in lower_c for k in ["calculate", "compound interest", "math", "+", "*", "/"]):
+            task_plan.requires_tools.append("calculate_expression")
+
+        resolved_task = ResolvedTask(
+            request_id=request_id or str(uuid.uuid4()),
+            raw_message=user_message,
+            canonical_query=canonical,
+            turn_type=turn_type,
+            intent=primary,
+            domain=domain,
+            complexity=complexity,
+            confidence=0.92,
+            is_visual=is_visual,
+            visual_prompt=visual_prompt,
+            active_subject=base_topic,
+            entities=resolved_entities,
+            resolved_references=references,
+            accumulated_constraints=constraints,
+            temporal_context=constraints.get("temporal"),
+            location_context=constraints.get("location"),
+            plan=task_plan,
+            workspace_slug=workspace_slug
+        )
 
         return ContextualQueryAnalysis(
             raw_query=user_message,
@@ -377,5 +325,6 @@ class QueryIntelligenceService:
             complexity=complexity,
             primary_intent=primary,
             composite_intents=composite,
-            intent_scores=scores
+            intent_scores=scores,
+            resolved_task=resolved_task
         )

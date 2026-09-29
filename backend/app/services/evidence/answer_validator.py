@@ -11,15 +11,13 @@ class ValidationReport(BaseModel):
     citations_valid: bool
     issues: List[str] = []
     warnings: List[str] = []
+    repair_instruction: Optional[str] = None
 
 
 class AnswerValidationEngine:
     """
-    Production-grade Pre-Generation Answer Validation & Anti-Hallucination Guardrails Engine.
-    Evaluates:
-    - Constraint fulfillment (License, Platform, Language, Hardware, Format)
-    - Citation integrity & index alignment
-    - Semantic evidence grounding
+    Production-grade Pre-Generation Answer Validation, Anti-Hallucination Guardrails,
+    and Automated Response Repair Engine.
     """
 
     @classmethod
@@ -39,24 +37,20 @@ class AnswerValidationEngine:
         elif constraints.get("format") == "json":
             if "{" not in text or "}" not in text:
                 issues.append("Missing required JSON formatted output requested by user.")
+        elif constraints.get("format") == "bullet_points":
+            if not any(line.strip().startswith(("-", "*", "•")) for line in text.split("\n")):
+                issues.append("Missing required bullet point structure requested by user.")
 
         # Language constraint
         lang = constraints.get("language")
         if lang:
-            # Check if code block uses requested language if code is present
             if "```" in text:
                 code_matches = re.findall(r"```([a-zA-Z0-9_\-\+]+)", text)
                 if code_matches:
                     normalized_codes = [c.lower() for c in code_matches]
-                    target_lang = "python" if lang in ["py", "python"] else "rust" if lang == "rust" else lang
+                    target_lang = "python" if lang in ["py", "python"] else "rust" if lang == "rust" else "golang" if lang in ["go", "golang"] else lang
                     if not any(target_lang in c for c in normalized_codes):
-                        # Warning if requested language block wasn't used
-                        pass
-
-        # License constraint
-        if constraints.get("license") == "open_source":
-            # Check for proprietary-only flags without open-source clarification
-            pass
+                        issues.append(f"Code block was not provided in requested language '{lang}'.")
 
         return len(issues) == 0, issues
 
@@ -69,7 +63,11 @@ class AnswerValidationEngine:
         """Verifies that all inline footnote numbers like [1], [2] correspond to valid source indices."""
         issues = []
         if num_sources == 0:
-            return True, []
+            # If no external sources are available, ensure there are no phantom [1], [2] references
+            phantom = re.findall(r"\[(\d+)\]", text)
+            if phantom:
+                issues.append(f"Response contains citation footnotes {phantom} but no external sources were retrieved.")
+            return len(issues) == 0, issues
 
         cited_indices = re.findall(r"\[(\d+)\]", text)
         for idx_str in cited_indices:
@@ -128,7 +126,16 @@ class AnswerValidationEngine:
         grounding = cls.calculate_grounding_score(response_text, chunks)
 
         all_issues = c_issues + cit_issues
-        is_valid = len(c_issues) == 0  # Severe violations mark as invalid
+        is_valid = len(all_issues) == 0
+
+        repair_instruction = None
+        if not is_valid:
+            repair_instruction = (
+                "CRITICAL CORRECTION REQUIRED:\n"
+                "Your previous response failed validation with the following issues:\n"
+                + "\n".join(f"- {issue}" for issue in all_issues)
+                + "\nPlease regenerate the response strictly fixing these violations while preserving accuracy."
+            )
 
         return ValidationReport(
             is_valid=is_valid,
@@ -136,5 +143,6 @@ class AnswerValidationEngine:
             constraints_satisfied=c_ok,
             citations_valid=cit_ok,
             issues=all_issues,
-            warnings=[]
+            warnings=[],
+            repair_instruction=repair_instruction
         )

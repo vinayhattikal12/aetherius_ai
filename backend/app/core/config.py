@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # Environment
-    ENVIRONMENT: str = "development"
-    DEBUG: bool = True
+    ENVIRONMENT: str = Field(default="development")
+    DEBUG: bool = Field(default=True)
     
     # Database - STRICT POSTGRESQL ONLY
     POSTGRES_SERVER: str = Field(default="localhost")
@@ -45,18 +45,19 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "data/storage/uploads"
 
     # Security
-    SECRET_KEY: str = "aetherius-super-secret-production-grade-key-2026-phase1"
+    SECRET_KEY: str = Field(default=os.getenv("AETHERIUS_SECRET_KEY", "aetherius-secure-default-key-change-in-prod-2026"))
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
-    # CORS
+    # CORS - Explicit whitelisted origins
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "electron://localhost",
-        "*"
+        "tauri://localhost"
     ]
 
     model_config = SettingsConfigDict(
