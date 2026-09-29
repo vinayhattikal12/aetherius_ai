@@ -272,11 +272,20 @@ class QueryIntelligenceService:
 
         visual_prompt = cls.synthesize_visual_prompt(user_message, base_topic) if is_visual else None
 
+        is_rag_required = any(
+            k in lower_c for k in [
+                "document", "documents", "file", "files", "pdf", "knowledge base",
+                "in the doc", "in the file", "our policy", "guidelines", "handbook",
+                "architecture spec", "system architecture", "according to", "in our knowledge",
+                "uploaded"
+            ]
+        ) and not is_fast
+
         # Build Task Plan
         task_plan = TaskPlan(
             requires_direct_model=True,
             requires_web_search=is_search,
-            requires_rag=False,  # Set dynamically in pipeline if enabled
+            requires_rag=is_rag_required,
             requires_tools=[],
             requires_code_execution=is_code and ("run" in lower_c or "test" in lower_c or "execute" in lower_c),
             requires_agent_react=False,

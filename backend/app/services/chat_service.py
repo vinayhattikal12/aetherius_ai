@@ -206,9 +206,16 @@ class ChatService:
         async def fetch_rag():
             if not request.enable_knowledge_rag and not resolved_task.plan.requires_rag:
                 return []
+            lower_q = resolved_task.canonical_query.lower().strip()
+            is_casual_or_greeting = (
+                lower_q in ["hi", "hello", "hey", "hello aetherius", "hi aetherius", "hey aetherius", "good morning", "good evening", "how are you", "who are you", "what can you do", "help", "ping"]
+                or (len(lower_q.split()) <= 2 and not any(k in lower_q for k in ["doc", "file", "spec", "pdf", "arch", "kb", "rag", "code", "table", "data"]))
+            )
+            if is_casual_or_greeting:
+                return []
             try:
                 return await RAGService.search_relevant_chunks(
-                    db=db, query=resolved_task.canonical_query, knowledge_base_slugs=request.knowledge_base_slugs, workspace_slug=request.workspace_slug, top_k=4
+                    db=db, query=resolved_task.canonical_query, knowledge_base_slugs=request.knowledge_base_slugs, workspace_slug=request.workspace_slug, top_k=4, min_similarity=0.65
                 )
             except Exception:
                 return []
@@ -550,9 +557,16 @@ class ChatService:
         async def fetch_rag():
             if not request.enable_knowledge_rag and not resolved_task.plan.requires_rag:
                 return []
+            lower_q = resolved_task.canonical_query.lower().strip()
+            is_casual_or_greeting = (
+                lower_q in ["hi", "hello", "hey", "hello aetherius", "hi aetherius", "hey aetherius", "good morning", "good evening", "how are you", "who are you", "what can you do", "help", "ping"]
+                or (len(lower_q.split()) <= 2 and not any(k in lower_q for k in ["doc", "file", "spec", "pdf", "arch", "kb", "rag", "code", "table", "data"]))
+            )
+            if is_casual_or_greeting:
+                return []
             try:
                 return await RAGService.search_relevant_chunks(
-                    db=db, query=resolved_task.canonical_query, knowledge_base_slugs=request.knowledge_base_slugs, workspace_slug=request.workspace_slug, top_k=4
+                    db=db, query=resolved_task.canonical_query, knowledge_base_slugs=request.knowledge_base_slugs, workspace_slug=request.workspace_slug, top_k=4, min_similarity=0.65
                 )
             except Exception:
                 return []
