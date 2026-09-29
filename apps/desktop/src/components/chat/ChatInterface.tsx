@@ -163,6 +163,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const activeStreamingConvIdRef = useRef<string | null>(null);
 
   // Close menus on outside click
   useEffect(() => {
@@ -336,7 +337,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   useEffect(() => {
     if (activeConversationId) {
-      loadMessages(activeConversationId);
+      // Do not wipe out in-flight streaming messages if the ID was just assigned by the current stream
+      if (activeConversationId !== activeStreamingConvIdRef.current) {
+        loadMessages(activeConversationId);
+      }
     } else {
       setMessages([]);
     }
@@ -353,9 +357,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const loadMessages = async (convId: string) => {
     try {
       const conv = await api.getConversation(convId);
-      setMessages(conv.messages || []);
-      if (conv.model_name) {
-        setSelectedModelId(conv.model_name);
+      if (convId !== activeStreamingConvIdRef.current) {
+        setMessages(conv.messages || []);
+        if (conv.model_name) {
+          setSelectedModelId(conv.model_name);
+        }
       }
     } catch (err) {
       console.error('Failed to load messages for conversation:', err);
@@ -420,6 +426,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
     setAttachments([]);
     setIsGenerating(true);
+    activeStreamingConvIdRef.current = activeConversationId || 'pending_stream';
 
     const isImageRequest =
       useImageGen ||
@@ -503,6 +510,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         );
       } finally {
         setIsGenerating(false);
+        activeStreamingConvIdRef.current = null;
         if (useImageGen) setUseImageGen(false);
       }
       return;
@@ -561,8 +569,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         },
         {
           onInit: (data) => {
-            if (!activeConversationId && data.conversation_id) {
-              setActiveConversationId(data.conversation_id);
+            if (data.conversation_id) {
+              activeStreamingConvIdRef.current = data.conversation_id;
+              if (activeConversationId !== data.conversation_id) {
+                setActiveConversationId(data.conversation_id);
+              }
               if (onRefreshConversations) onRefreshConversations();
             }
             setMessages((prev) =>
@@ -614,6 +625,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             );
           },
           onDone: (data) => {
+            activeStreamingConvIdRef.current = null;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === tempAssistantId
@@ -634,12 +646,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           },
           onError: (err) => {
             console.error('Chat streaming error:', err);
+            activeStreamingConvIdRef.current = null;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === tempAssistantId
                   ? {
                       ...m,
-                      content: `Error communicating with AI engine: ${
+                      content: `⚠️ Error communicating with AI engine: ${
                         err.message || 'Check PostgreSQL & model service.'
                       }`,
                       generation_metadata: { error: true },
@@ -654,6 +667,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       console.error('Chat error:', err);
     } finally {
       setIsGenerating(false);
+      activeStreamingConvIdRef.current = null;
     }
   };
 

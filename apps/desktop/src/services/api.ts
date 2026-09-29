@@ -343,14 +343,16 @@ class ApiService {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
+        const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
         for (const line of lines) {
           const trimmed = line.trim();
-          if (trimmed.startsWith('data: ')) {
+          if (trimmed.startsWith('data:')) {
+            const dataStr = trimmed.replace(/^data:\s*/, '').trim();
+            if (!dataStr) continue;
             try {
-              const data = JSON.parse(trimmed.slice(6));
+              const data = JSON.parse(dataStr);
               if (data.type === 'init' && callbacks.onInit) {
                 callbacks.onInit(data);
               } else if (data.type === 'image' && callbacks.onImage) {
@@ -359,6 +361,8 @@ class ApiService {
                 callbacks.onToken(data.token);
               } else if (data.type === 'done' && callbacks.onDone) {
                 callbacks.onDone(data);
+              } else if (data.type === 'error' && callbacks.onError) {
+                callbacks.onError(new Error(data.message || data.error || 'Streaming error'));
               }
             } catch (err) {
               console.debug('Failed to parse SSE line:', line);

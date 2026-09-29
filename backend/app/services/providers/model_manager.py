@@ -171,8 +171,18 @@ class ModelManager:
         requested_mode: str = "manual",
     ) -> AsyncGenerator[str, None]:
         provider, _ = await self.get_provider_and_metadata(model_name, requested_mode=requested_mode)
-        async for token in provider.generate_stream(messages, model_name, temperature, max_tokens):
-            yield token
+        try:
+            async for token in provider.generate_stream(messages, model_name, temperature, max_tokens):
+                yield token
+        except Exception as e:
+            logger.warning(f"Primary streaming provider {provider.__class__.__name__} failed: {e}")
+            if provider == self.ollama and await self.cloud.health_check():
+                logger.info("Retrying stream via Cloud Provider fallback...")
+                cloud_p = await self.cloud.get_active_provider(model_name)
+                async for token in cloud_p.generate_stream(messages, model_name, temperature, max_tokens):
+                    yield token
+            else:
+                raise
 
     async def stream_response(
         self,
