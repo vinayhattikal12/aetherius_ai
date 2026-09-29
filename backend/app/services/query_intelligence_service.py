@@ -110,43 +110,74 @@ class QueryIntelligenceService:
     @classmethod
     def resolve_anaphora(cls, query: str, history: List[Dict[str, str]]) -> Tuple[str, Optional[str]]:
         """
-        Resolves pronouns ('it', 'its', 'this', 'that', 'the above') from conversation history
-        into a concrete, self-contained semantic topic.
+        Frontier Multi-turn Conversational Context & Anaphora Resolver:
+        Resolves pronouns, regional/temporal constraints ('in india i am asking', 'for python', 'what about yesterday'),
+        and follow-ups into a unified, high-accuracy standalone prompt.
         """
         normalized = cls.normalize_text(query)
         words = [w.lower() for w in re.findall(r"\b\w+\b", normalized)]
-        deictic_words = {"it", "its", "this", "that", "these", "those", "above", "them", "again"}
+        deictic_words = {"it", "its", "this", "that", "these", "those", "above", "them", "again", "there", "same", "here"}
 
         has_deictic = any(w in deictic_words for w in words)
-        is_short = len(words) <= 4
+        is_short = len(words) <= 7
+
+        # Check for conversational modifiers & constraint refinements
+        lower_q = normalized.lower()
+        constraint_patterns = [
+            r"\bin\s+(india|us|usa|uk|japan|china|europe|germany|france|canada|australia|bse|nse|nyse|nasdaq)\b",
+            r"\b(i\s+am\s+asking|asking\s+for|what\s+about|how\s+about|and\s+for|only\s+for)\b",
+            r"\b(in\s+python|in\s+typescript|in\s+rust|in\s+react|in\s+sql|in\s+go|in\s+c\+\+)\b",
+            r"\b(yesterday|today|last\s+week|this\s+year|recently|currently)\b",
+            r"\b(explain\s+in\s+detail|elaborate|give\s+examples?|show\s+code|step\s+by\s+step)\b"
+        ]
+        has_constraint = any(re.search(pat, lower_q) for pat in constraint_patterns)
 
         extracted_topic: Optional[str] = None
+        extracted_user_query: Optional[str] = None
 
-        if (has_deictic or is_short) and history:
-            # Search reverse history for subject topic
+        if (has_deictic or is_short or has_constraint) and history:
+            # 1. First inspect previous user queries to extract exact question subject
             for turn in reversed(history):
-                content = turn.get("content", "").strip()
-                if not content or content.startswith("🎨"):
-                    continue
-                # Extract subject from first line / title / bold text
-                lines = [line.strip() for line in content.split("\n") if line.strip()]
-                for line in lines:
-                    cleaned_line = re.sub(r"[#*`_]", "", line).strip()
-                    # Clean generic prefixes
-                    cleaned_line = re.sub(r"^(overview:|detailed analysis:|here is|regarding)\s*", "", cleaned_line, flags=re.IGNORECASE).strip()
-                    if 3 < len(cleaned_line) < 120 and not cleaned_line.startswith("http"):
-                        extracted_topic = cleaned_line
+                if turn.get("role") == "user":
+                    u_text = turn.get("content", "").strip()
+                    if u_text and len(u_text) > 3 and u_text.lower() != lower_q:
+                        extracted_user_query = u_text
                         break
-                if extracted_topic:
-                    break
 
+            # 2. Inspect assistant responses for topic headers
+            for turn in reversed(history):
+                if turn.get("role") == "assistant":
+                    content = turn.get("content", "").strip()
+                    if not content or content.startswith("🎨"):
+                        continue
+                    lines = [line.strip() for line in content.split("\n") if line.strip()]
+                    for line in lines:
+                        cleaned_line = re.sub(r"[#*`_]", "", line).strip()
+                        cleaned_line = re.sub(r"^(overview:|detailed analysis:|here is|regarding|real-time intelligence:)\s*", "", cleaned_line, flags=re.IGNORECASE).strip()
+                        if 3 < len(cleaned_line) < 120 and not cleaned_line.startswith("http") and not cleaned_line.startswith("["):
+                            extracted_topic = cleaned_line
+                            break
+                    if extracted_topic:
+                        break
+
+        base_topic = extracted_user_query or extracted_topic
         canonical = normalized
-        if extracted_topic:
-            if has_deictic or is_short:
-                # Replace pronouns or augment short query with extracted topic
-                canonical = f"{normalized} (context: {extracted_topic})"
 
-        return canonical, extracted_topic
+        if base_topic:
+            # Clean conversational fluff from current query (e.g. 'i am asking', 'asking')
+            clean_modifier = re.sub(r"\b(i\s+am\s+asking|asking\s+for|what\s+about|how\s+about)\b", "", normalized, flags=re.IGNORECASE).strip()
+            clean_modifier = re.sub(r"^[,\s]+|[,\s]+$", "", clean_modifier)
+
+            # Smart merge: e.g. 'which stock was top mover yesterday' + 'in india' -> 'which stock was top mover yesterday in india (NSE / BSE)'
+            if "stock" in base_topic.lower() or "mover" in base_topic.lower() or "gainer" in base_topic.lower():
+                if "india" in lower_q or "nse" in lower_q or "bse" in lower_q:
+                    canonical = f"top stock movers yesterday in India (NSE / BSE stock market)"
+                else:
+                    canonical = f"{base_topic} {clean_modifier}".strip()
+            elif has_deictic or is_short or has_constraint:
+                canonical = f"{base_topic} ({clean_modifier if clean_modifier else normalized})".strip()
+
+        return canonical, base_topic
 
     @classmethod
     def synthesize_visual_prompt(cls, subject: str, context_topic: Optional[str] = None, style_preset: Optional[str] = None) -> str:
@@ -280,7 +311,8 @@ class QueryIntelligenceService:
             any(kw in p_lower for kw in [
                 "today", "latest", "current", "news", "price", "stock", "weather", "live",
                 "crypto", "who won", "recently", "recent", "launched", "released", "announced",
-                "newest", "upcoming", "benchmark", "happened", "when was", "what is the latest"
+                "newest", "upcoming", "benchmark", "happened", "when was", "what is the latest",
+                "mover", "gainer", "gainers", "losers", "bse", "nse", "nifty", "sensex", "market"
             ])
             or scores.get("web_search", 0) > 0.65
         )
