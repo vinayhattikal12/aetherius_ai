@@ -24,6 +24,8 @@ import {
   ChevronRight,
   PanelLeft,
   ArrowUp,
+  ArrowDown,
+  Square,
   ZoomIn,
   ZoomOut,
   RotateCcw,
@@ -39,19 +41,27 @@ import {
 
 interface AssistantMessageBodyProps {
   content: string;
+  modelName?: string;
+  isGenerating?: boolean;
   onImageClick?: (url: string) => void;
 }
 
-const AssistantMessageBody: React.FC<AssistantMessageBodyProps> = ({ content, onImageClick }) => {
-  const [showThinking, setShowThinking] = useState<boolean>(false);
+const AssistantMessageBody: React.FC<AssistantMessageBodyProps> = ({
+  content,
+  modelName,
+  isGenerating,
+  onImageClick,
+}) => {
+  const [showThinking, setShowThinking] = useState<boolean>(true);
 
   if (!content) {
     return (
-      <span className="inline-flex items-center gap-1.5 py-1 text-[#949494]">
-        <span className="w-2 h-2 rounded-full bg-[#34888D] animate-bounce" />
-        <span className="w-2 h-2 rounded-full bg-[#34888D] animate-bounce delay-150" />
-        <span className="w-2 h-2 rounded-full bg-[#34888D] animate-bounce delay-300" />
-      </span>
+      <div className="flex items-center gap-2.5 py-2 px-3.5 rounded-[12px] bg-[#161615] border border-[#2a2928] text-xs text-[#34888D] w-fit shadow-sm animate-pulse">
+        <Loader2 className="w-4 h-4 animate-spin text-[#34888D]" />
+        <span className="font-medium text-white/90">
+          {modelName ? `${modelName} reasoning & generating...` : 'Reasoning & generating response...'}
+        </span>
+      </div>
     );
   }
 
@@ -104,7 +114,12 @@ const AssistantMessageBody: React.FC<AssistantMessageBodyProps> = ({ content, on
       )}
 
       {answer ? (
-        <MarkdownContent content={answer} onImageClick={onImageClick} />
+        <div className="relative">
+          <MarkdownContent content={answer} onImageClick={onImageClick} />
+          {isGenerating && (
+            <span className="inline-block w-1.5 h-3.5 ml-1 bg-[#34888D] animate-pulse align-middle rounded-sm" />
+          )}
+        </div>
       ) : thinking !== null ? (
         <div className="flex items-center space-x-2 text-xs text-[#34888D] py-1">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -151,13 +166,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [useImageGen, setUseImageGen] = useState<boolean>(false);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
-  // Claude UI Dropdown & Audio States
   const [isModelMenuOpen, setIsModelMenuOpen] = useState<boolean>(false);
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState<boolean>(false);
   const [modelSearchQuery, setModelSearchQuery] = useState<string>('');
   const [isListening, setIsListening] = useState<boolean>(false);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isUserScrolledUpRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -346,13 +364,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, [activeConversationId]);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, isGenerating]);
+  const handleScroll = () => {
+    if (!scrollContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    const isUp = distanceFromBottom > 90;
+    isUserScrolledUpRef.current = isUp;
+    setShowScrollBottomBtn(isUp);
+  };
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (force = false) => {
+    if (!force && isUserScrolledUpRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
+
+  const handleScrollToBottomClick = () => {
+    isUserScrolledUpRef.current = false;
+    setShowScrollBottomBtn(false);
+    scrollToBottom(true);
+  };
+
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsGenerating(false);
+    activeStreamingConvIdRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!isUserScrolledUpRef.current) {
+      scrollToBottom();
+    }
+  }, [messages, isGenerating]);
 
   const loadMessages = async (convId: string) => {
     try {
@@ -548,6 +593,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     };
 
     setMessages((prev) => [...prev, tempUserMsg, tempAssistantMsg]);
+    isUserScrolledUpRef.current = false;
+    setShowScrollBottomBtn(false);
+    setTimeout(() => scrollToBottom(true), 50);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       let currentContent = '';
@@ -661,12 +712,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               )
             );
           },
-        }
+        },
+        controller.signal
       );
     } catch (err: any) {
-      console.error('Chat error:', err);
+      if (err.name !== 'AbortError') {
+        console.error('Chat error:', err);
+      }
     } finally {
       setIsGenerating(false);
+      abortControllerRef.current = null;
       activeStreamingConvIdRef.current = null;
     }
   };
@@ -848,10 +903,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {/* Main Conversation Stream (Centered Max-W-3XL layout) */}
       <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className="flex-1 overflow-y-auto px-4 md:px-6 py-4 select-text"
+        className="flex-1 overflow-y-auto px-4 md:px-6 py-4 select-text relative"
       >
         {/* Drag & Drop Overlay */}
         {isDraggingOver && (
@@ -982,6 +1039,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     ) : (
                       <AssistantMessageBody
                         content={msg.content}
+                        modelName={msg.model_id || selectedModelId}
+                        isGenerating={isGenerating && idx === messages.length - 1}
                         onImageClick={(url) => {
                           setPreviewImageModal(url);
                           setImageZoom(1);
@@ -1043,6 +1102,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {/* Floating Scroll to Bottom Button */}
+        {showScrollBottomBtn && (
+          <div className="sticky bottom-4 inset-x-0 flex justify-center pointer-events-none z-30">
+            <button
+              type="button"
+              onClick={handleScrollToBottomClick}
+              className="pointer-events-auto px-3.5 py-1.5 rounded-full bg-[#1e1d1c]/95 hover:bg-[#2c2b29] border border-[#3e3d3a] text-white shadow-2xl backdrop-blur-md transition-all flex items-center gap-2 text-xs group animate-in fade-in slide-in-from-bottom-2"
+              title="Scroll to bottom"
+            >
+              <ArrowDown className="w-3.5 h-3.5 text-[#34888D] group-hover:translate-y-0.5 transition-transform" />
+              <span className="text-[11px] text-[#c4c4c4] font-medium">Scroll to bottom</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Claude-Style Chat Input Dock (Image 2 format) */}
@@ -1367,14 +1441,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </button>
 
-                {/* Audio Waveform / Mode Icon & Send Arrow (Image 2 format) */}
-                {inputPrompt.trim() || attachments.length > 0 ? (
+                {/* Audio Waveform / Mode Icon & Send Arrow / Stop Button */}
+                {isGenerating ? (
+                  <button
+                    type="button"
+                    onClick={handleStopGeneration}
+                    className="p-1.5 rounded-full bg-white text-black hover:bg-white/90 shadow-[0_0_12px_rgba(255,255,255,0.3)] transition-all flex items-center justify-center group"
+                    title="Stop generation"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-black group-hover:scale-90 transition-transform" />
+                  </button>
+                ) : inputPrompt.trim() || attachments.length > 0 ? (
                   <button
                     type="button"
                     onClick={handleSendMessage}
-                    disabled={isGenerating || isUploadingFile}
+                    disabled={isUploadingFile}
                     className={`p-1.5 rounded-full transition-all flex items-center justify-center ${
-                      !isGenerating && !isUploadingFile
+                      !isUploadingFile
                         ? 'bg-white text-black hover:bg-white/90 shadow-[0_0_12px_rgba(255,255,255,0.25)]'
                         : 'bg-[#292827] text-[#787775] cursor-not-allowed'
                     }`}

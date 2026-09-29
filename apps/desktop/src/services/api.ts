@@ -317,7 +317,8 @@ class ApiService {
       onToken?: (token: string) => void;
       onDone?: (data: { message_id: string; content: string; conversation_id: string; citations: any[]; model_used?: string; image_url?: string }) => void;
       onError?: (error: Error) => void;
-    }
+    },
+    signal?: AbortSignal
   ): Promise<void> {
     const url = `${API_BASE_URL}/api/v1/chat/stream`;
     try {
@@ -325,6 +326,7 @@ class ApiService {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal,
       });
 
       if (!response.ok) {
@@ -339,6 +341,11 @@ class ApiService {
       let buffer = '';
 
       while (true) {
+        if (signal?.aborted) {
+          reader.cancel().catch(() => {});
+          break;
+        }
+
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -371,6 +378,10 @@ class ApiService {
         }
       }
     } catch (err: any) {
+      if (err.name === 'AbortError' || signal?.aborted) {
+        console.debug('Chat stream aborted by user');
+        return;
+      }
       if (callbacks.onError) callbacks.onError(err);
       else throw err;
     }
