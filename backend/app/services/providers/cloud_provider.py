@@ -31,7 +31,7 @@ class CloudProvider(BaseModelProvider):
             try:
                 system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
                 user_msgs = [m for m in messages if m["role"] != "system"]
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=10.0) as client:
                     res = await client.post(
                         "https://api.anthropic.com/v1/messages",
                         headers={
@@ -58,7 +58,7 @@ class CloudProvider(BaseModelProvider):
         base_url = "https://api.groq.com/openai/v1" if self.groq_key and not self.openai_key else "https://api.openai.com/v1"
         if api_key:
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=10.0) as client:
                     res = await client.post(
                         f"{base_url}/chat/completions",
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},

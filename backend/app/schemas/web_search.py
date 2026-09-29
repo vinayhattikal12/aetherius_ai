@@ -7,6 +7,7 @@ class WebSearchResultItem(BaseModel):
     url: str
     snippet: str
     source_domain: Optional[str] = None
+    deep_content: Optional[str] = None
 
 
 class WebSearchRequest(BaseModel):

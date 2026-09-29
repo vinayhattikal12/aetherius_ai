@@ -78,12 +78,17 @@ class ContextEngine:
             rag_text = "Retrieved Document Knowledge:\n" + "\n\n".join(rag_parts)
             rag_tokens = cls.estimate_tokens(rag_text)
 
-        # 5. Assemble Web Search Context
+        # 5. Assemble Web Search Context with Frontier Footnote Indexing
         web_text = ""
         web_tokens = 0
         if web_results and len(web_results) > 0:
-            web_parts = [f"- **{w.get('title')}**\n  Snippet: {w.get('snippet')}\n  URL: {w.get('url')}" for w in web_results]
-            web_text = "### [LIVE REAL-TIME WEB SEARCH RESULTS]:\n" + "\n\n".join(web_parts)
+            web_parts = []
+            for idx, w in enumerate(web_results, 1):
+                part = f"[{idx}] Title: {w.get('title')}\n    URL: {w.get('url')}\n    Summary: {w.get('snippet')}"
+                if w.get("deep_content"):
+                    part += f"\n    Full Article Excerpt: {w.get('deep_content')}"
+                web_parts.append(part)
+            web_text = "### [LIVE REAL-TIME WEB SEARCH & DEEP RETRIEVAL DATA]:\n" + "\n\n".join(web_parts)
             web_tokens = cls.estimate_tokens(web_text)
 
         # 6. Fit Conversation History within remaining budget
@@ -104,13 +109,18 @@ class ContextEngine:
                 else:
                     break
 
-        # 7. Construct Final Augmented User Prompt
+        # 7. Construct Final Augmented User Prompt with Strict Grounding Directive
         augmented_user_parts = []
         if rag_text:
             augmented_user_parts.append(rag_text)
         if web_text:
             augmented_user_parts.append(web_text)
-            augmented_user_parts.append("DIRECTIVE: Use the live web search results above to answer the user query in detail. Cite numbers, indices, and top movers, and list sources at the end.")
+            augmented_user_parts.append(
+                "STRICT GROUNDING DIRECTIVE:\n"
+                "1. Answer using the live web search data and full article excerpts provided above.\n"
+                "2. When stating facts, numbers, or conclusions, add inline bracketed footnotes corresponding to the source index, e.g. [1], [2].\n"
+                "3. Conclude with a clean '### Sources & Evidence' section listing the source titles and markdown hyperlinks."
+            )
 
         augmented_user_parts.append(f"User Request:\n{current_user_message}")
         augmented_prompt = "\n\n---\n\n".join(augmented_user_parts)

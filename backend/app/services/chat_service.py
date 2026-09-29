@@ -225,8 +225,8 @@ class ChatService:
         web_searched = bool(web_raw_results)
         web_results = []
         if web_searched:
-            web_results = [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in web_raw_results]
-            citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, snippet=r.snippet) for r in web_raw_results])
+            web_results = [{"title": r.title, "url": r.url, "snippet": r.snippet, "deep_content": getattr(r, "deep_content", None)} for r in web_raw_results]
+            citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, snippet=r.deep_content[:300] if getattr(r, "deep_content", None) else r.snippet) for r in web_raw_results])
 
         # Assemble Context
         effective_user_message = request.message + attachment_text_context
@@ -484,8 +484,8 @@ class ChatService:
         web_searched = bool(web_raw_results)
         web_results = []
         if web_searched:
-            web_results = [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in web_raw_results]
-            citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, snippet=r.snippet) for r in web_raw_results])
+            web_results = [{"title": r.title, "url": r.url, "snippet": r.snippet, "deep_content": getattr(r, "deep_content", None)} for r in web_raw_results]
+            citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, snippet=r.deep_content[:300] if getattr(r, "deep_content", None) else r.snippet) for r in web_raw_results])
 
         # Immediate init SSE event with auto-routing badge and conversation ID
         yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [c.model_dump() for c in citations], 'model_used': model_to_use, 'routing_reason': routing_reason, 'image_url': generated_image_url})}\n\n"
