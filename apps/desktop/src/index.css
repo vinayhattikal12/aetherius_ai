@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary-accent: #016A71;
+  --primary-accent-hover: #01575d;
+  --secondary-accent: #34888D;
+  --glow-color: #4e99a3;
+  --surface-pitch: #000000;
+  --surface-elevated: #171615;
+  --surface-elevated-hover: #1e1d1c;
+  --border-subtle: #2a2928;
+  --border-active: #363534;
+  --text-pure: #FFFFFF;
+  --text-muted: #949494;
+  --ask-input-glow: 0 0 28px 2px rgba(78, 153, 163, 0.22);
+}
+
+@layer base {
+  * {
+    border-color: #2a2928;
+  }
+  
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #000000;
+  }
+
+  body {
+    background-color: #000000;
+    color: #FFFFFF;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Custom subtle flat scrollbar */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a2928;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #363534;
+  }
+}
+
+/* Custom interactive classes */
+.glow-input {
+  box-shadow: 0 0 24px 2px rgba(78, 153, 163, 0.18);
+  border-color: rgba(78, 153, 163, 0.45);
+}
+
+.glow-btn {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glow-btn:hover {
+  box-shadow: 0 0 20px 2px rgba(78, 153, 163, 0.3);
+}
