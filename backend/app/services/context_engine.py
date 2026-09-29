@@ -39,6 +39,7 @@ class ContextEngine:
         chat_history: Optional[List[Dict[str, str]]] = None,
         current_user_message: str = "",
         accumulated_constraints: Optional[Dict[str, Any]] = None,
+        conversation_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Assembles prioritized token-budgeted prompt payload."""
         available_prompt_tokens = max(1200, model_context_limit - max_output_tokens)
@@ -62,7 +63,43 @@ class ContextEngine:
         if workspace_instructions:
             system_sections.append(f"### [WORKSPACE ROLE DIRECTIVES]:\n{workspace_instructions}")
 
-        # 2. User & Environment Context Layer
+        # 2. Conversational State & Turn Intent Layer
+        if conversation_state:
+            state_lines = []
+            topic = conversation_state.get("topic")
+            turn_type = conversation_state.get("turn_type", "NEW_TOPIC")
+            subtopics = conversation_state.get("subtopics", [])
+            references = conversation_state.get("references", {})
+            last_goal = conversation_state.get("last_user_goal")
+
+            if topic:
+                state_lines.append(f"- Active Conversation Topic: {topic}")
+            if subtopics:
+                state_lines.append(f"- Recent Subtopics: {', '.join(subtopics[-4:])}")
+            if last_goal and last_goal != topic:
+                state_lines.append(f"- Immediate Prior Goal: {last_goal}")
+            if references:
+                ref_str = ", ".join(f"'{k}' -> {v}" for k, v in list(references.items())[:6] if k not in ["subject"])
+                if ref_str:
+                    state_lines.append(f"- Resolved Reference Context: [{ref_str}]")
+
+            # Turn type specific guidance
+            turn_guidance = {
+                "CORRECTION": "The user is correcting a detail or misunderstanding. Acknowledge directly, adopt the correction smoothly, and provide the revised solution without excessive apologies.",
+                "MODIFICATION": "The user is modifying the previous response (e.g. changing language, adding constraints, refining performance). Apply modifications directly to the existing solution.",
+                "EXPANSION": "The user wants more depth, additional examples, or edge cases. Elaborate thoroughly on the current topic without repeating the basic introduction.",
+                "COMPARISON": "The user is requesting a comparative evaluation. Provide a clear structured trade-off breakdown covering key decision criteria (performance, complexity, ergonomics).",
+                "CLARIFICATION": "The user is seeking clarification or reasoning on a specific aspect. Provide a clear, intuitive conceptual explanation.",
+                "CONTINUATION": "The user wants to proceed to the next step or continue generation. Pick up seamlessly where the previous turn ended.",
+                "FOLLOW_UP": "The user is following up within the active discussion context. Maintain continuity.",
+            }
+            if turn_type in turn_guidance:
+                state_lines.append(f"- Turn Relation Mode ({turn_type}): {turn_guidance[turn_type]}")
+
+            if state_lines:
+                system_sections.append("### [CONVERSATION STATE & TURN INTELLIGENCE]:\n" + "\n".join(state_lines))
+
+        # 3. User & Environment Context Layer
         env_lines = []
         if environment_context:
             for k, v in environment_context.items():
@@ -74,7 +111,7 @@ class ContextEngine:
         if env_lines:
             system_sections.append(f"### [ENVIRONMENT & USER CONTEXT]:\n" + "\n".join(env_lines))
 
-        # 3. Active Task & Project Context Layer
+        # 4. Active Task & Project Context Layer
         if task_context:
             task_desc = f"Objective: {task_context.get('objective', 'Active Task')}\nStatus: {task_context.get('status', 'running')}\nCurrent Step: {task_context.get('current_step', 'in progress')}"
             system_sections.append(f"### [ACTIVE TASK CONTEXT]:\n{task_desc}")
@@ -83,7 +120,7 @@ class ContextEngine:
             proj_desc = f"Project: {project_context.get('name', 'Active Workspace')}\nActive Files: {project_context.get('files', [])}"
             system_sections.append(f"### [PROJECT CONTEXT]:\n{proj_desc}")
 
-        # 4. Memory Context Layer (Semantic & Episodic)
+        # 5. Memory Context Layer (Semantic & Episodic)
         if memories and len(memories) > 0:
             mem_lines = []
             for m in memories:
@@ -96,7 +133,7 @@ class ContextEngine:
                 + "\n(Seamlessly adapt tone, constraints, and preferences without explicitly announcing recall unless asked.)"
             )
 
-        # 5. Tool Context Layer
+        # 6. Tool Context Layer
         if tool_definitions and len(tool_definitions) > 0:
             tool_summaries = [f"- `{t.get('name')}`: {t.get('description')}" for t in tool_definitions]
             system_sections.append(f"### [AVAILABLE SANDBOX TOOLS]:\n" + "\n".join(tool_summaries))

@@ -20,6 +20,8 @@ from backend.app.services.context_engine import ContextEngine
 from backend.app.services.router_service import ModelRouter
 from backend.app.services.tool_service import ToolExecutionEngine, ToolExecutionRequest
 from backend.app.services.image_gen_service import ImageGenService, ImageGenerationRequest
+from backend.app.services.conversation_state_service import ConversationStateService
+from backend.app.services.evidence import AnswerValidationEngine
 from backend.app.services.providers.model_manager import model_manager
 from backend.app.core.logging import logger
 
@@ -133,18 +135,21 @@ class ChatService:
                 rag_applied=False
             )
 
-        # Fetch recent history first
+        # Fetch recent history and persistent conversation state
         res_h = await db.execute(
             select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.asc())
         )
         recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-10:]]
 
-        # Multi-Turn Semantic Query Intelligence Analysis
+        conv_state = await ConversationStateService.get_or_create_state(db, conversation.id)
+
+        # Multi-Turn Semantic Query Intelligence Analysis with State & Anaphora
         from backend.app.services.query_intelligence_service import QueryIntelligenceService
         q_analysis = await QueryIntelligenceService.analyze_query(
             user_message=request.message,
             conversation_history=recent_history,
-            workspace_slug=request.workspace_slug
+            workspace_slug=request.workspace_slug,
+            conversation_state=conv_state
         )
 
         is_visual = q_analysis.is_visual
@@ -226,6 +231,14 @@ class ChatService:
         if generated_image_url:
             effective_user_message += f"\n\n[Visual Illustration Generated: {generated_image_url}]"
 
+        state_payload = {
+            "topic": q_analysis.base_topic or conv_state.topic,
+            "turn_type": q_analysis.turn_type,
+            "subtopics": conv_state.subtopics,
+            "references": q_analysis.references,
+            "last_user_goal": conv_state.last_user_goal or q_analysis.canonical_prompt,
+        }
+
         assembled = ContextEngine.assemble_context(
             model_context_limit=8192,
             max_output_tokens=request.max_tokens or 2048,
@@ -236,7 +249,8 @@ class ChatService:
             web_results=web_results,
             chat_history=recent_history,
             current_user_message=effective_user_message,
-            accumulated_constraints=q_analysis.extracted_constraints
+            accumulated_constraints=q_analysis.extracted_constraints,
+            conversation_state=state_payload
         )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
@@ -246,12 +260,55 @@ class ChatService:
             user_turn_payload["images"] = image_base64_list
         messages_payload.append(user_turn_payload)
 
-        # Generate LLM response
-        assistant_content = await model_manager.generate_response(
-            messages=messages_payload,
-            model_name=model_to_use or "llama3.2:3b",
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
+        # Generate LLM response with precise model identity metadata
+        try:
+            assistant_content, exec_meta = await model_manager.generate_response_with_metadata(
+                messages=messages_payload,
+                model_name=model_to_use or "llama3.2:3b",
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                requested_mode="auto" if not request.model_name or request.model_name == "auto" else "manual"
+            )
+            exec_meta_dict = exec_meta.to_dict()
+        except Exception as e:
+            logger.error(f"Chat completion model execution error: {e}")
+            assistant_content = (
+                f"I couldn't complete the request because the selected model ({model_to_use}) is unavailable "
+                f"and no reachable fallback provider was configured. Details: {str(e)}"
+            )
+            exec_meta_dict = {
+                "requested_mode": "auto" if not request.model_name or request.model_name == "auto" else "manual",
+                "selected_model": model_to_use,
+                "actual_model": "none",
+                "provider": "none",
+                "runtime": "offline",
+                "fallback_used": False,
+                "reason": str(e)
+            }
+
+        # Update Conversation State in PostgreSQL
+        try:
+            await ConversationStateService.update_state_turn(
+                db=db,
+                conversation_id=conversation.id,
+                user_message=request.message,
+                turn_type=q_analysis.turn_type,
+                resolved_topic=q_analysis.base_topic or request.message[:50],
+                canonical_prompt=q_analysis.canonical_prompt,
+                entities=ConversationStateService.extract_entities(request.message),
+                references=q_analysis.references,
+                constraints=q_analysis.extracted_constraints,
+                assistant_summary=assistant_content[:300]
+            )
+        except Exception as state_err:
+            logger.warning(f"Notice updating conversation state: {state_err}")
+
+        # Answer Validation & Grounding Guardrails
+        val_report = AnswerValidationEngine.validate_response(
+            response_text=assistant_content,
+            constraints=q_analysis.extracted_constraints,
+            available_sources=[c.model_dump() for c in citations],
+            evidence_chunks=[w.get("snippet", "") + " " + (w.get("deep_content") or "") for w in web_results] + [c.content for c, _ in rag_chunks]
         )
 
         # Save Assistant Message
@@ -263,13 +320,18 @@ class ChatService:
             "image_url": generated_image_url,
             "context_stats": assembled["stats"],
             "constraints_applied": q_analysis.extracted_constraints,
+            "turn_type": q_analysis.turn_type,
+            "canonical_prompt": q_analysis.canonical_prompt,
+            "resolved_topic": q_analysis.base_topic,
+            "execution_metadata": exec_meta_dict,
+            "validation_report": val_report.model_dump(),
         }
 
         assistant_msg = Message(
             conversation_id=conversation.id,
             role="assistant",
             content=assistant_content,
-            model_name=model_to_use,
+            model_name=exec_meta_dict.get("actual_model") or model_to_use,
             citations=[c.model_dump() for c in citations],
             token_count=len(assistant_content.split()),
             extra_metadata=assistant_metadata
@@ -278,18 +340,16 @@ class ChatService:
         await db.commit()
         await db.refresh(assistant_msg)
 
-        # Background fact extraction (non-blocking)
+        # Inline fact extraction
         try:
-            asyncio.create_task(
-                MemoryService.extract_and_store_from_text(
-                    db=db,
-                    text=request.message,
-                    workspace_slug=request.workspace_slug,
-                    conversation_id=conversation.id
-                )
+            await MemoryService.extract_and_store_from_text(
+                db=db,
+                text=request.message,
+                workspace_slug=request.workspace_slug,
+                conversation_id=conversation.id
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Fact extraction notice: {e}")
 
         return ChatCompletionResponse(
             conversation_id=conversation.id,
@@ -406,18 +466,21 @@ class ChatService:
             yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': explicit_mem_reply, 'conversation_id': conversation.id, 'model_used': model_to_use, 'citations': []})}\n\n"
             return
 
-        # Fetch recent history first
+        # Fetch recent history and conversation state
         res_h = await db.execute(
             select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.asc())
         )
         recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-10:]]
 
-        # Multi-Turn Semantic Query Intelligence Analysis
+        conv_state = await ConversationStateService.get_or_create_state(db, conversation.id)
+
+        # Multi-Turn Semantic Query Intelligence Analysis with State & Anaphora
         from backend.app.services.query_intelligence_service import QueryIntelligenceService
         q_analysis = await QueryIntelligenceService.analyze_query(
             user_message=request.message,
             conversation_history=recent_history,
-            workspace_slug=request.workspace_slug
+            workspace_slug=request.workspace_slug,
+            conversation_state=conv_state
         )
 
         is_visual = q_analysis.is_visual
@@ -497,7 +560,7 @@ class ChatService:
             citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, snippet=r.deep_content[:300] if getattr(r, "deep_content", None) else r.snippet) for r in web_raw_results])
 
         # Immediate init SSE event with auto-routing badge and conversation ID
-        yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [c.model_dump() for c in citations], 'model_used': model_to_use, 'routing_reason': routing_reason, 'image_url': generated_image_url})}\n\n"
+        yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [c.model_dump() for c in citations], 'model_used': model_to_use, 'routing_reason': routing_reason, 'image_url': generated_image_url, 'turn_type': q_analysis.turn_type})}\n\n"
 
         # If visual image was generated, emit visual event immediately
         if generated_image_url:
@@ -505,6 +568,14 @@ class ChatService:
 
         # Assemble Context with Adaptive Intelligence Directives
         effective_user_message = request.message + attachment_text_context
+        state_payload = {
+            "topic": q_analysis.base_topic or conv_state.topic,
+            "turn_type": q_analysis.turn_type,
+            "subtopics": conv_state.subtopics,
+            "references": q_analysis.references,
+            "last_user_goal": conv_state.last_user_goal or q_analysis.canonical_prompt,
+        }
+
         assembled = ContextEngine.assemble_context(
             model_context_limit=8192,
             max_output_tokens=request.max_tokens or 2048,
@@ -515,7 +586,8 @@ class ChatService:
             web_results=web_results,
             chat_history=recent_history,
             current_user_message=effective_user_message,
-            accumulated_constraints=q_analysis.extracted_constraints
+            accumulated_constraints=q_analysis.extracted_constraints,
+            conversation_state=state_payload
         )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
@@ -527,16 +599,51 @@ class ChatService:
 
         # Stream LLM tokens directly to client
         accumulated_tokens: List[str] = []
-        async for token in model_manager.generate_stream(
-            messages=messages_payload,
-            model_name=model_to_use or "llama3.2:3b",
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
-        ):
-            accumulated_tokens.append(token)
-            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+        try:
+            async for token in model_manager.generate_stream(
+                messages=messages_payload,
+                model_name=model_to_use or "llama3.2:3b",
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                requested_mode="auto" if not request.model_name or request.model_name == "auto" else "manual"
+            ):
+                accumulated_tokens.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+        except Exception as e:
+            logger.error(f"Streaming model execution error: {e}")
+            err_msg = (
+                f"\n\n[I couldn't complete the request because the selected model ({model_to_use}) is unavailable "
+                f"and no reachable fallback provider was configured: {str(e)}]"
+            )
+            accumulated_tokens.append(err_msg)
+            yield f"data: {json.dumps({'type': 'token', 'token': err_msg})}\n\n"
 
         assistant_content = "".join(accumulated_tokens)
+
+        # Update Conversation State in PostgreSQL
+        try:
+            await ConversationStateService.update_state_turn(
+                db=db,
+                conversation_id=conversation.id,
+                user_message=request.message,
+                turn_type=q_analysis.turn_type,
+                resolved_topic=q_analysis.base_topic or request.message[:50],
+                canonical_prompt=q_analysis.canonical_prompt,
+                entities=ConversationStateService.extract_entities(request.message),
+                references=q_analysis.references,
+                constraints=q_analysis.extracted_constraints,
+                assistant_summary=assistant_content[:300]
+            )
+        except Exception as state_err:
+            logger.warning(f"Notice updating conversation state: {state_err}")
+
+        # Answer Validation & Grounding Guardrails
+        val_report = AnswerValidationEngine.validate_response(
+            response_text=assistant_content,
+            constraints=q_analysis.extracted_constraints,
+            available_sources=[c.model_dump() for c in citations],
+            evidence_chunks=[w.get("snippet", "") + " " + (w.get("deep_content") or "") for w in web_results] + [c.content for c, _ in rag_chunks]
+        )
 
         # Save Assistant Message
         assistant_metadata = {
@@ -547,6 +654,10 @@ class ChatService:
             "image_url": generated_image_url,
             "context_stats": assembled["stats"],
             "constraints_applied": q_analysis.extracted_constraints,
+            "turn_type": q_analysis.turn_type,
+            "canonical_prompt": q_analysis.canonical_prompt,
+            "resolved_topic": q_analysis.base_topic,
+            "validation_report": val_report.model_dump(),
         }
 
         assistant_msg = Message(
@@ -562,18 +673,16 @@ class ChatService:
         await db.commit()
         await db.refresh(assistant_msg)
 
-        # Background fact extraction (non-blocking)
+        # Inline fact extraction
         try:
-            asyncio.create_task(
-                MemoryService.extract_and_store_from_text(
-                    db=db,
-                    text=request.message,
-                    workspace_slug=request.workspace_slug,
-                    conversation_id=conversation.id
-                )
+            await MemoryService.extract_and_store_from_text(
+                db=db,
+                text=request.message,
+                workspace_slug=request.workspace_slug,
+                conversation_id=conversation.id
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Fact extraction notice: {e}")
 
         # Final done SSE event
         yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': assistant_content, 'conversation_id': conversation.id, 'model_used': model_to_use, 'citations': [c.model_dump() for c in citations], 'image_url': generated_image_url})}\n\n"

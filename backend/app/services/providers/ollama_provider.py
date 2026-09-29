@@ -7,18 +7,39 @@ from backend.app.core.logging import logger
 
 
 class OllamaProvider(BaseModelProvider):
-    """Local Ollama model provider with dynamic tags detection and pull operations."""
+    """Local Ollama model provider with dynamic tags detection, capability inspection, and pull operations."""
 
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         self.base_url = base_url
 
     async def is_available(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=2.0) as client:
                 res = await client.get(f"{self.base_url}/api/tags")
                 return res.status_code == 200
         except Exception:
             return False
+
+    async def health_check(self) -> bool:
+        return await self.is_available()
+
+    def get_model_info(self, model_name: str) -> Dict[str, Any]:
+        is_coder = "coder" in model_name.lower() or "code" in model_name.lower()
+        is_reasoner = "r1" in model_name.lower() or "reason" in model_name.lower()
+        is_vision = "vision" in model_name.lower() or "vl" in model_name.lower() or "llava" in model_name.lower()
+        return {
+            "provider": "ollama",
+            "model_name": model_name,
+            "runtime": "local",
+            "supports_tools": True,
+            "supports_vision": is_vision,
+            "context_limit": 16384 if is_coder else 8192,
+            "is_coding": is_coder,
+            "is_reasoning": is_reasoner,
+        }
+
+    def supports_vision(self) -> bool:
+        return True
 
     async def get_installed_tags(self) -> List[str]:
         """Return list of locally installed model tags in Ollama."""
@@ -114,7 +135,6 @@ class OllamaProvider(BaseModelProvider):
         has_images = any("images" in m and m["images"] for m in messages)
         target_model = await self.resolve_target_model(model_name, has_images=has_images)
         
-        # Strip system prefix if empty and normalize payload
         clean_messages = []
         for m in messages:
             if m.get("content") or m.get("images"):
@@ -123,7 +143,7 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=4.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=4.0)) as client:
             res = await client.post(
                 f"{self.base_url}/api/chat",
                 json={
@@ -139,7 +159,7 @@ class OllamaProvider(BaseModelProvider):
             if res.status_code == 200:
                 data = res.json()
                 return data.get("message", {}).get("content", "")
-            raise RuntimeError(f"Ollama returned {res.status_code}: {res.text}")
+            raise RuntimeError(f"Ollama returned HTTP {res.status_code}: {res.text}")
 
     async def generate_stream(
         self,
@@ -159,7 +179,7 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=4.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=4.0)) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",
@@ -173,6 +193,10 @@ class OllamaProvider(BaseModelProvider):
                     }
                 }
             ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    raise RuntimeError(f"Ollama streaming returned HTTP {response.status_code}: {error_body.decode('utf-8', 'ignore')}")
+
                 async for line in response.aiter_lines():
                     if line:
                         try:

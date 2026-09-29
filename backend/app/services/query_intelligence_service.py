@@ -2,6 +2,7 @@ import re
 from typing import Dict, Any, List, Optional, Tuple, Set
 from pydantic import BaseModel
 from backend.app.services.embedding_service import EmbeddingService
+from backend.app.services.conversation_state_service import ConversationStateService, TurnType
 from backend.app.core.logging import logger
 
 
@@ -10,7 +11,9 @@ class ContextualQueryAnalysis(BaseModel):
     normalized_query: str
     canonical_prompt: str
     base_topic: Optional[str] = None
+    turn_type: str = TurnType.NEW_TOPIC
     extracted_entities: List[str] = []
+    references: Dict[str, Any] = {}
     extracted_constraints: Dict[str, Any] = {}
     is_visual: bool = False
     is_code: bool = False
@@ -275,20 +278,39 @@ class QueryIntelligenceService:
         cls,
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        workspace_slug: str = "general"
+        workspace_slug: str = "general",
+        conversation_state: Optional[Any] = None
     ) -> ContextualQueryAnalysis:
         """
         Generic End-to-End Query Semantic Intelligence:
         1. Normalizes typos and shorthand.
-        2. Resolves multi-turn anaphora and accumulated constraints across ANY domain.
-        3. Computes semantic intent embeddings.
-        4. Identifies composite intents.
+        2. Resolves multi-turn anaphora and accumulated constraints across ANY domain using ConversationStateService.
+        3. Classifies conversational turn type (NEW_TOPIC, FOLLOW_UP, MODIFICATION, CLARIFICATION, CORRECTION, etc.).
+        4. Computes semantic intent embeddings.
+        5. Identifies composite intents.
         """
         history = conversation_history or []
         normalized = cls.normalize_text(user_message)
-        canonical, base_topic, constraints = cls.resolve_anaphora(user_message, history)
 
-        # 1. Intent Centroids Cosine Proximity
+        # 1. Resolve anaphora, references, constraints and active topic
+        canonical, base_topic, references, constraints = ConversationStateService.resolve_references(
+            query=user_message,
+            history=history,
+            state=conversation_state
+        )
+
+        # 2. Classify conversational turn relation
+        turn_type = ConversationStateService.classify_turn(
+            current_message=user_message,
+            history=history,
+            current_topic=base_topic
+        )
+
+        # 3. Extract named entities and technologies
+        extracted_entities_dict = ConversationStateService.extract_entities(user_message)
+        extracted_entities = list(extracted_entities_dict.keys())
+
+        # 4. Intent Centroids Cosine Proximity
         query_emb = await EmbeddingService.embed_text(canonical)
         centroids = await cls._get_centroid_embeddings()
 
@@ -297,7 +319,7 @@ class QueryIntelligenceService:
             sim = EmbeddingService.cosine_similarity(query_emb, c_emb)
             scores[intent] = round(sim, 3)
 
-        # 2. Detect Capabilities & Intents
+        # 5. Detect Capabilities & Intents
         lower_c = canonical.lower()
         is_visual = (
             scores.get("visual_generation", 0) > 0.65
@@ -327,7 +349,7 @@ class QueryIntelligenceService:
             composite.append("deep_reasoning")
         if is_visual:
             composite.append("visual_generation")
-        if "compare" in lower_c or "versus" in lower_c:
+        if "compare" in lower_c or "versus" in lower_c or turn_type == TurnType.COMPARISON:
             composite.append("comparison")
         if not composite:
             composite.append("general_question")
@@ -342,6 +364,9 @@ class QueryIntelligenceService:
             normalized_query=normalized,
             canonical_prompt=canonical,
             base_topic=base_topic,
+            turn_type=turn_type,
+            extracted_entities=extracted_entities,
+            references=references,
             extracted_constraints=constraints,
             is_visual=is_visual,
             is_code=is_code,

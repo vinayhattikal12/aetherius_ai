@@ -15,6 +15,29 @@ class Conversation(BaseModel):
     # Relationships
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan", order_by="Message.created_at")
     summary = relationship("ConversationSummary", back_populates="conversation", uselist=False, cascade="all, delete-orphan")
+    state = relationship("ConversationState", back_populates="conversation", uselist=False, cascade="all, delete-orphan")
+
+
+class ConversationState(BaseModel):
+    __tablename__ = "conversation_states"
+
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    topic: Mapped[str] = mapped_column(String(255), nullable=True)
+    subtopics: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    active_intent: Mapped[str] = mapped_column(String(100), default="general_question", nullable=False)
+    turn_type: Mapped[str] = mapped_column(String(50), default="NEW_TOPIC", nullable=False)
+    entities: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    references: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    constraints: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    temporal_context: Mapped[str] = mapped_column(String(100), nullable=True)
+    geographic_context: Mapped[str] = mapped_column(String(100), nullable=True)
+    previous_results: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    last_user_goal: Mapped[str] = mapped_column(Text, nullable=True)
+    unresolved_questions: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    turn_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Relationships
+    conversation = relationship("Conversation", back_populates="state")
 
 
 class Message(BaseModel):

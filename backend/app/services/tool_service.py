@@ -2,9 +2,10 @@ import ast
 import json
 import re
 import time
+import math
 import hashlib
 import operator
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from backend.app.schemas.tool import (
     ToolDefinition,
     ToolParameter,
@@ -19,14 +20,16 @@ SAFE_OPERATORS = {
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
     ast.Pow: operator.pow,
     ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
     ast.Mod: operator.mod
 }
 
 
 def _eval_ast(node):
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float, complex)):
         return node.value
     elif isinstance(node, ast.BinOp):
         left = _eval_ast(node.left)
@@ -41,8 +44,104 @@ def _eval_ast(node):
         if op is None:
             raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
         return op(operand)
+    elif isinstance(node, ast.Call):
+        # Allow safe math functions e.g. sqrt(144), sin(0), log(10)
+        func_name = getattr(node.func, "id", None)
+        allowed_math_funcs = {
+            "sqrt": math.sqrt,
+            "sin": math.sin,
+            "cos": math.cos,
+            "tan": math.tan,
+            "log": math.log,
+            "log10": math.log10,
+            "log2": math.log2,
+            "exp": math.exp,
+            "floor": math.floor,
+            "ceil": math.ceil,
+            "abs": abs,
+            "round": round,
+            "min": min,
+            "max": max,
+        }
+        if func_name in allowed_math_funcs:
+            args = [_eval_ast(arg) for arg in node.args]
+            return allowed_math_funcs[func_name](*args)
+        raise ValueError(f"Function call '{func_name}' is not permitted in math sandbox.")
     else:
         raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+
+
+class SandboxedCodeExecutor:
+    """Restricted AST Python code sandbox preventing system calls, I/O, and dunder escapes."""
+
+    BANNED_NODES = (
+        ast.Import,
+        ast.ImportFrom,
+        ast.Global,
+        ast.Nonlocal,
+        ast.Delete,
+        ast.With,
+        ast.AsyncWith,
+    )
+
+    SAFE_BUILTINS = {
+        "abs": abs,
+        "round": round,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "len": len,
+        "range": range,
+        "enumerate": enumerate,
+        "zip": zip,
+        "map": map,
+        "filter": filter,
+        "sorted": sorted,
+        "reversed": reversed,
+        "int": int,
+        "float": float,
+        "str": str,
+        "bool": bool,
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "tuple": tuple,
+        "math": math,
+    }
+
+    @classmethod
+    def execute_safe_python(cls, code: str, timeout_sec: float = 2.0) -> Tuple[bool, Any, Optional[str]]:
+        """Parses AST, verifies security constraints, and executes in an isolated environment."""
+        if not code or not code.strip():
+            return False, None, "Code cannot be empty."
+
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return False, None, f"Syntax error: {e}"
+
+        # AST Security Audit: Scan for forbidden operations
+        for node in ast.walk(tree):
+            if isinstance(node, cls.BANNED_NODES):
+                return False, None, f"Security Violation: Statement '{type(node).__name__}' is forbidden in sandbox."
+            if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+                return False, None, f"Security Violation: Dunder attribute access '{node.attr}' is forbidden."
+            if isinstance(node, ast.Name) and node.id in ["eval", "exec", "open", "globals", "locals", "__import__", "compile"]:
+                return False, None, f"Security Violation: Built-in '{node.id}' is forbidden."
+
+        # Compile and execute in clean scope
+        local_scope: Dict[str, Any] = {}
+        global_scope: Dict[str, Any] = {"__builtins__": cls.SAFE_BUILTINS}
+
+        try:
+            compiled = compile(tree, filename="<sandbox>", mode="exec")
+            exec(compiled, global_scope, local_scope)
+            
+            # Return result variable if defined, or all local variables
+            result = local_scope.get("result", local_scope.get("output", local_scope))
+            return True, result, None
+        except Exception as e:
+            return False, None, f"Runtime error: {e}"
 
 
 class ToolExecutionEngine:
@@ -55,9 +154,19 @@ class ToolExecutionEngine:
             category="math",
             description="Safely evaluate mathematical and arithmetic expressions without arbitrary code execution.",
             parameters=[
-                ToolParameter(name="expression", type="string", description="Arithmetic formula e.g. '(120 * 45) + (10 ** 3)'")
+                ToolParameter(name="expression", type="string", description="Arithmetic formula e.g. '(120 * 45) + (10 ** 3)' or 'sqrt(144)'")
             ],
             workspace_types=["general", "developer", "finance", "research", "student"]
+        ),
+        "python_sandbox": ToolDefinition(
+            name="python_sandbox",
+            display_name="Safe Python Code Sandbox",
+            category="code",
+            description="Safely execute pure Python algorithms, data transformations, and calculations in a restricted sandbox.",
+            parameters=[
+                ToolParameter(name="code", type="string", description="Python code block storing output in 'result' variable.")
+            ],
+            workspace_types=["general", "developer", "research", "finance"]
         ),
         "format_json": ToolDefinition(
             name="format_json",
@@ -137,17 +246,23 @@ class ToolExecutionEngine:
             )
 
         start_time = time.perf_counter()
-        args = request.arguments
+        args = request.arguments or {}
 
         try:
             if request.tool_name == "calculate_expression":
                 expr = args.get("expression", "").strip()
                 if not expr:
                     raise ValueError("Expression cannot be empty")
-                # Parse AST safely
                 tree = ast.parse(expr, mode="eval")
                 val = _eval_ast(tree.body)
                 result = {"expression": expr, "result": val}
+
+            elif request.tool_name == "python_sandbox":
+                code = args.get("code", "").strip()
+                success, output, err = SandboxedCodeExecutor.execute_safe_python(code)
+                if not success:
+                    raise ValueError(err or "Execution error in Python sandbox")
+                result = {"code": code, "output": output}
 
             elif request.tool_name == "format_json":
                 raw = args.get("raw_json", "")
