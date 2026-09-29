@@ -278,9 +278,11 @@ class QueryIntelligenceService:
 
         is_search = (
             any(kw in p_lower for kw in [
-                "today", "latest", "current", "news", "price", "stock", "weather", "live", "crypto", "who won"
+                "today", "latest", "current", "news", "price", "stock", "weather", "live",
+                "crypto", "who won", "recently", "recent", "launched", "released", "announced",
+                "newest", "upcoming", "benchmark", "happened", "when was", "what is the latest"
             ])
-            or scores.get("web_search", 0) > 0.72
+            or scores.get("web_search", 0) > 0.65
         )
 
         is_fast = not is_code and not is_reasoning and not is_visual and len(canonical.split()) <= 6
