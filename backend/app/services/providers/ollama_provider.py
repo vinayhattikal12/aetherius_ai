@@ -214,6 +214,9 @@ class OllamaProvider(BaseModelProvider):
                         "num_predict": max_tokens,
                         "num_ctx": num_ctx,
                         "num_thread": self._cpu_threads,
+                        "num_batch": 512,
+                        "f16_kv": False,
+                        "use_mmap": True,
                     }
                 }
             )
@@ -258,6 +261,9 @@ class OllamaProvider(BaseModelProvider):
                         "num_predict": max_tokens,
                         "num_ctx": num_ctx,
                         "num_thread": self._cpu_threads,
+                        "num_batch": 512,
+                        "f16_kv": False,
+                        "use_mmap": True,
                     }
                 }
             ) as response:
