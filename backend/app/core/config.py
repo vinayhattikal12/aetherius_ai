@@ -60,6 +60,9 @@ class Settings(BaseSettings):
         "tauri://localhost"
     ]
 
+    # Sandboxing & Execution Security
+    ENABLE_PYTHON_SANDBOX: bool = Field(default=False)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

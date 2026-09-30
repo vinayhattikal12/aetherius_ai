@@ -71,8 +71,13 @@ def _eval_ast(node):
         raise ValueError(f"Unsupported expression element: {type(node).__name__}")
 
 
+import sys
+import subprocess
+from backend.app.core.config import settings
+
+
 class SandboxedCodeExecutor:
-    """Restricted AST Python code sandbox preventing system calls, I/O, and dunder escapes."""
+    """Restricted out-of-process Python code sandbox preventing system calls, I/O, and resource exhaustion."""
 
     BANNED_NODES = (
         ast.Import,
@@ -84,34 +89,17 @@ class SandboxedCodeExecutor:
         ast.AsyncWith,
     )
 
-    SAFE_BUILTINS = {
-        "abs": abs,
-        "round": round,
-        "min": min,
-        "max": max,
-        "sum": sum,
-        "len": len,
-        "range": range,
-        "enumerate": enumerate,
-        "zip": zip,
-        "map": map,
-        "filter": filter,
-        "sorted": sorted,
-        "reversed": reversed,
-        "int": int,
-        "float": float,
-        "str": str,
-        "bool": bool,
-        "list": list,
-        "dict": dict,
-        "set": set,
-        "tuple": tuple,
-        "math": math,
+    FORBIDDEN_NAMES = {
+        "eval", "exec", "open", "globals", "locals", "__import__", "compile",
+        "input", "breakpoint", "help", "memoryview", "getattr", "setattr", "delattr"
     }
 
     @classmethod
     def execute_safe_python(cls, code: str, timeout_sec: float = 2.0) -> Tuple[bool, Any, Optional[str]]:
-        """Parses AST, verifies security constraints, and executes in an isolated environment."""
+        """Validates AST and executes code in an isolated out-of-process Python interpreter."""
+        if not settings.ENABLE_PYTHON_SANDBOX:
+            return False, None, "Python sandbox execution is disabled by default for security. Set ENABLE_PYTHON_SANDBOX=True in configuration to enable."
+
         if not code or not code.strip():
             return False, None, "Code cannot be empty."
 
@@ -126,22 +114,75 @@ class SandboxedCodeExecutor:
                 return False, None, f"Security Violation: Statement '{type(node).__name__}' is forbidden in sandbox."
             if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
                 return False, None, f"Security Violation: Dunder attribute access '{node.attr}' is forbidden."
-            if isinstance(node, ast.Name) and node.id in ["eval", "exec", "open", "globals", "locals", "__import__", "compile"]:
-                return False, None, f"Security Violation: Built-in '{node.id}' is forbidden."
+            if isinstance(node, ast.Name) and node.id in cls.FORBIDDEN_NAMES:
+                return False, None, f"Security Violation: Built-in or function '{node.id}' is forbidden."
 
-        # Compile and execute in clean scope
-        local_scope: Dict[str, Any] = {}
-        global_scope: Dict[str, Any] = {"__builtins__": cls.SAFE_BUILTINS}
+        # Wrapper script executed in isolated out-of-process runner
+        runner_script = """
+import sys
+import json
+import math
+
+safe_builtins = {
+    'abs': abs, 'round': round, 'min': min, 'max': max, 'sum': sum,
+    'len': len, 'range': range, 'enumerate': enumerate, 'zip': zip,
+    'map': map, 'filter': filter, 'sorted': sorted, 'reversed': reversed,
+    'int': int, 'float': float, 'str': str, 'bool': bool, 'list': list,
+    'dict': dict, 'set': set, 'tuple': tuple, 'math': math, 'print': print
+}
+
+user_code = sys.stdin.read()
+local_scope = {}
+global_scope = {'__builtins__': safe_builtins}
+
+try:
+    compiled = compile(user_code, '<sandbox>', 'exec')
+    exec(compiled, global_scope, local_scope)
+    res = local_scope.get('result', local_scope.get('output', {k: v for k, v in local_scope.items() if not k.startswith('_')}))
+    try:
+        json_output = json.dumps(res, default=str)
+        print("___RESULT___" + json_output)
+    except Exception:
+        print("___RESULT___" + json.dumps(str(res)))
+except Exception as err:
+    print("___ERROR___" + str(err), file=sys.stderr)
+    sys.exit(1)
+"""
 
         try:
-            compiled = compile(tree, filename="<sandbox>", mode="exec")
-            exec(compiled, global_scope, local_scope)
+            # -I : isolated mode (ignore PYTHONPATH, current dir, PYTHONHOME)
+            # -S : don't initialize site-packages
+            proc = subprocess.run(
+                [sys.executable, "-I", "-S", "-c", runner_script],
+                input=code,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+
+            if proc.returncode != 0:
+                err_msg = proc.stderr.strip()
+                if "___ERROR___" in err_msg:
+                    err_msg = err_msg.split("___ERROR___")[-1].strip()
+                return False, None, f"Runtime error: {err_msg or 'Non-zero exit status'}"
+
+            stdout = proc.stdout.strip()
+            if "___RESULT___" in stdout:
+                result_str = stdout.split("___RESULT___")[-1].strip()
+                try:
+                    result_data = json.loads(result_str)
+                    return True, result_data, None
+                except Exception:
+                    return True, result_str[:10000], None
             
-            # Return result variable if defined, or all local variables
-            result = local_scope.get("result", local_scope.get("output", local_scope))
-            return True, result, None
+            # If no explicit result marker, return captured stdout (capped to 10KB)
+            return True, stdout[:10000], None
+
+        except subprocess.TimeoutExpired:
+            return False, None, f"Execution timed out after {timeout_sec}s."
         except Exception as e:
-            return False, None, f"Runtime error: {e}"
+            logger.error(f"Sandbox subprocess execution failed: {e}")
+            return False, None, f"Sandbox execution failure: {e}"
 
 
 class ToolExecutionEngine:
