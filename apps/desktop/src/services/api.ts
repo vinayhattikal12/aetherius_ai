@@ -180,18 +180,22 @@ class ApiService {
   }
 
   // --- Hugging Face Hub & Upgrade Advisor Endpoints ---
-  async getHFTrendingModels(category?: string): Promise<HuggingFaceModelCard[]> {
-    const q = category ? `?category=${encodeURIComponent(category)}` : '';
-    return this.request<HuggingFaceModelCard[]>(`/api/v1/models/huggingface/trending${q}`);
+  async getHFTrendingModels(category?: string, limit: number = 36): Promise<HuggingFaceModelCard[]> {
+    const params = new URLSearchParams();
+    if (category && category !== 'all') params.append('category', category);
+    params.append('limit', limit.toString());
+    return this.request<HuggingFaceModelCard[]>(`/api/v1/models/huggingface/trending?${params.toString()}`);
   }
 
-  async searchHFModels(query: string): Promise<HuggingFaceModelCard[]> {
-    return this.request<HuggingFaceModelCard[]>(`/api/v1/models/huggingface/search?q=${encodeURIComponent(query)}`);
+  async searchHFModels(query: string, limit: number = 36): Promise<HuggingFaceModelCard[]> {
+    return this.request<HuggingFaceModelCard[]>(`/api/v1/models/huggingface/search?q=${encodeURIComponent(query)}&limit=${limit}`);
   }
 
-  async getHFDatasets(query?: string): Promise<HuggingFaceDatasetCard[]> {
-    const q = query ? `?q=${encodeURIComponent(query)}` : '';
-    return this.request<HuggingFaceDatasetCard[]>(`/api/v1/models/huggingface/datasets${q}`);
+  async getHFDatasets(query?: string, limit: number = 36): Promise<HuggingFaceDatasetCard[]> {
+    const params = new URLSearchParams();
+    if (query) params.append('q', query);
+    params.append('limit', limit.toString());
+    return this.request<HuggingFaceDatasetCard[]>(`/api/v1/models/huggingface/datasets?${params.toString()}`);
   }
 
   async getDailyFeed(): Promise<DailyOpenSourceFeed> {

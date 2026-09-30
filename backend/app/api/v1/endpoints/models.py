@@ -81,7 +81,7 @@ async def stream_install_progress(model_identifier: str):
 @router.get("/huggingface/trending", response_model=List[HuggingFaceModelCard])
 async def get_huggingface_trending_models(
     category: Optional[str] = Query(None, description="Category filter (Coding, Reasoning, Fast, Image Generation, General)"),
-    limit: int = Query(15, ge=1, le=50),
+    limit: int = Query(30, ge=1, le=100),
 ):
     """Fetch live trending open-source models from Hugging Face Hub evaluated against local PC hardware."""
     profile = HardwareDetector.get_hardware_profile()
@@ -91,7 +91,7 @@ async def get_huggingface_trending_models(
 @router.get("/huggingface/search", response_model=List[HuggingFaceModelCard])
 async def search_huggingface_models(
     q: str = Query(..., description="Search query e.g. 'qwen 7b', 'deepseek', 'flux'"),
-    limit: int = Query(12, ge=1, le=30),
+    limit: int = Query(30, ge=1, le=100),
 ):
     """Search for models on Hugging Face Hub with real-time hardware sizing analysis."""
     profile = HardwareDetector.get_hardware_profile()
@@ -101,7 +101,7 @@ async def search_huggingface_models(
 @router.get("/huggingface/datasets", response_model=List[HuggingFaceDatasetCard])
 async def search_huggingface_datasets(
     q: Optional[str] = Query(None, description="Search query or category for datasets"),
-    limit: int = Query(12, ge=1, le=30),
+    limit: int = Query(30, ge=1, le=100),
 ):
     """Fetch and discover open-source Hugging Face datasets."""
     return await HuggingFaceHubService.fetch_popular_datasets(query=q, limit=limit)

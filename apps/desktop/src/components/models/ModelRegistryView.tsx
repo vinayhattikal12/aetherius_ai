@@ -199,14 +199,30 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
     }
   };
 
-  const loadHfModels = async () => {
+  const [hfLimit, setHfLimit] = useState<number>(36);
+  const [datasetLimit, setDatasetLimit] = useState<number>(36);
+  const [isLoadingMoreHf, setIsLoadingMoreHf] = useState<boolean>(false);
+  const [isLoadingMoreDatasets, setIsLoadingMoreDatasets] = useState<boolean>(false);
+
+  const formatNumber = (num: number): string => {
+    if (!num) return '0';
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    }
+    if (num >= 1000) {
+      return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    }
+    return num.toLocaleString();
+  };
+
+  const loadHfModels = async (limitToUse: number = 36) => {
     setIsLoadingHf(true);
     try {
       if (hfSearchQuery.trim()) {
-        const results = await api.searchHFModels(hfSearchQuery);
+        const results = await api.searchHFModels(hfSearchQuery, limitToUse);
         setHfModels(results);
       } else {
-        const trending = await api.getHFTrendingModels(hfCategory);
+        const trending = await api.getHFTrendingModels(hfCategory, limitToUse);
         setHfModels(trending);
       }
     } catch (err) {
@@ -216,10 +232,29 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
     }
   };
 
-  const loadDatasets = async () => {
+  const handleLoadMoreHf = async () => {
+    const nextLimit = hfLimit + 36;
+    setHfLimit(nextLimit);
+    setIsLoadingMoreHf(true);
+    try {
+      if (hfSearchQuery.trim()) {
+        const results = await api.searchHFModels(hfSearchQuery, nextLimit);
+        setHfModels(results);
+      } else {
+        const trending = await api.getHFTrendingModels(hfCategory, nextLimit);
+        setHfModels(trending);
+      }
+    } catch (err) {
+      console.error('Failed to load more models:', err);
+    } finally {
+      setIsLoadingMoreHf(false);
+    }
+  };
+
+  const loadDatasets = async (limitToUse: number = 36) => {
     setIsLoadingDatasets(true);
     try {
-      const results = await api.getHFDatasets(datasetSearchQuery);
+      const results = await api.getHFDatasets(datasetSearchQuery, limitToUse);
       setHfDatasets(results);
     } catch (err) {
       console.error('Failed to load datasets:', err);
@@ -228,14 +263,30 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
     }
   };
 
+  const handleLoadMoreDatasets = async () => {
+    const nextLimit = datasetLimit + 36;
+    setDatasetLimit(nextLimit);
+    setIsLoadingMoreDatasets(true);
+    try {
+      const results = await api.getHFDatasets(datasetSearchQuery, nextLimit);
+      setHfDatasets(results);
+    } catch (err) {
+      console.error('Failed to load more datasets:', err);
+    } finally {
+      setIsLoadingMoreDatasets(false);
+    }
+  };
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    loadHfModels();
+    setHfLimit(36);
+    loadHfModels(36);
   };
 
   const handleDatasetSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    loadDatasets();
+    setDatasetLimit(36);
+    loadDatasets(36);
   };
 
   const trackLiveProgress = (targetId: string, displayName: string) => {
@@ -754,7 +805,7 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
                 type="text"
                 value={hfSearchQuery}
                 onChange={(e) => setHfSearchQuery(e.target.value)}
-                placeholder="Search any Hugging Face model or GGUF repo..."
+                placeholder="Search all 500,000+ Hugging Face models (e.g. llama, deepseek, qwen, coder)..."
                 className="w-full bg-[#171615] border border-[#2a2928] rounded-[11px] pl-9 pr-20 py-2 text-xs text-white placeholder-[#949494] focus:outline-none focus:border-[#34888D]/70"
               />
               <button
@@ -765,7 +816,7 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
               </button>
             </form>
 
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               {(['all', 'Coding', 'Reasoning', 'Fast', 'Image Generation'] as const).map((cat) => (
                 <button
                   key={cat}
@@ -785,132 +836,169 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
             </div>
           </div>
 
+          <div className="flex items-center justify-between text-xs text-[#777] px-1">
+            <span>
+              Showing <strong className="text-zinc-200">{hfModels.length}</strong> open-weights models evaluated for your hardware
+            </span>
+            {hfSearchQuery && (
+              <button
+                onClick={() => {
+                  setHfSearchQuery('');
+                  loadHfModels(36);
+                }}
+                className="text-[#34888D] hover:underline"
+              >
+                Clear search filter
+              </button>
+            )}
+          </div>
+
           {isLoadingHf ? (
             <div className="p-12 text-center text-xs text-[#949494] flex items-center justify-center gap-2">
               <RefreshCw className="w-4 h-4 animate-spin text-[#34888D]" />
               <span>Querying Hugging Face Hub live API & calculating hardware fit...</span>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {hfModels.map((hf) => {
-                const isInstalled = models.some(
-                  (m) => (m.name.includes(hf.model_name.toLowerCase()) || m.name === hf.ollama_pull_tag) && m.is_installed
-                );
-                const prog = installProgressMap[hf.repo_id] || installProgressMap[`hf.co/${hf.repo_id}`];
-                const isCurrentlyInstalling = prog && !prog.is_completed && prog.status !== 'failed';
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {hfModels.map((hf) => {
+                  const isInstalled = models.some(
+                    (m) => (m.name.includes(hf.model_name.toLowerCase()) || m.name === hf.ollama_pull_tag) && m.is_installed
+                  );
+                  const prog = installProgressMap[hf.repo_id] || installProgressMap[`hf.co/${hf.repo_id}`];
+                  const isCurrentlyInstalling = prog && !prog.is_completed && prog.status !== 'failed';
 
-                return (
-                  <Card
-                    key={hf.repo_id}
-                    className="flex flex-col justify-between space-y-4 hover:border-[#34888D]/60 transition-colors bg-[#121110] border-[#222120]"
-                  >
-                    <div className="space-y-2.5">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <div className="p-2 rounded-[11px] bg-[#1c1b1a] border border-[#2a2928]">
-                            {getCategoryIcon(hf.category)}
-                          </div>
-                          <div>
-                            <div className="text-sm font-semibold text-white truncate max-w-[170px]" title={hf.model_name}>
-                              {hf.model_name}
+                  return (
+                    <Card
+                      key={hf.repo_id}
+                      className="h-full flex flex-col justify-between p-4 bg-[#121110] border-[#222120] hover:border-[#34888D]/50 transition-all rounded-[14px] shadow-sm hover:shadow-[0_4px_20px_rgba(0,0,0,0.4)]"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-start justify-between gap-2.5">
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className="p-2 rounded-[10px] bg-[#1c1b1a] border border-[#2a2928] flex-shrink-0 text-white">
+                              {getCategoryIcon(hf.category)}
                             </div>
-                            <div className="text-[11px] text-[#949494] font-mono truncate max-w-[170px]" title={hf.repo_id}>
-                              {hf.repo_id}
+                            <div className="min-w-0 flex-1">
+                              <h4 className="text-xs font-semibold text-white truncate leading-tight" title={hf.model_name}>
+                                {hf.model_name}
+                              </h4>
+                              <span className="text-[11px] text-[#888] font-mono truncate block" title={hf.repo_id}>
+                                {hf.author}
+                              </span>
                             </div>
                           </div>
-                        </div>
 
-                        {hf.compatibility && (
-                          <Badge
-                            variant={
-                              hf.compatibility.compatibility === 'Compatible'
-                                ? 'success'
-                                : hf.compatibility.compatibility === 'Maybe Compatible'
-                                ? 'warning'
-                                : 'danger'
-                            }
-                            size="sm"
-                          >
-                            {hf.compatibility.compatibility}
-                          </Badge>
-                        )}
-                      </div>
-
-                      <p className="text-xs text-[#949494] line-clamp-2 leading-relaxed">
-                        {hf.description}
-                      </p>
-
-                      {hf.benchmark_highlight && (
-                        <div className="p-2 rounded-[8px] bg-amber-950/30 border border-amber-800/40 text-[11px] text-amber-300 font-medium">
-                          ⭐ {hf.benchmark_highlight}
-                        </div>
-                      )}
-
-                      <div className="p-2.5 rounded-[10px] bg-black/40 border border-[#222120] text-[11px] space-y-1 text-[#949494]">
-                        <div className="flex justify-between">
-                          <span>Downloads:</span>
-                          <span className="text-white font-mono">{hf.downloads.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Est. Download:</span>
-                          <span className="text-white font-mono">~{hf.estimated_size_gb} GB ({hf.recommended_quantization})</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Pull Tag:</span>
-                          <span className="text-[#34888D] font-mono text-[10px] truncate max-w-[150px]">{hf.ollama_pull_tag}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-[#222120]">
-                      {isCurrentlyInstalling ? (
-                        <div className="w-full space-y-1.5 py-1">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-[#34888D] font-mono truncate">{prog.status_message}</span>
-                            <span className="text-white font-mono font-bold ml-2">{Math.round(prog.progress_percent)}%</span>
-                          </div>
-                          <div className="w-full h-1.5 bg-[#222120] rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-[#016A71] to-emerald-400 rounded-full transition-all duration-300"
-                              style={{ width: `${Math.max(prog.progress_percent, 5)}%` }}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-between">
-                          <a
-                            href={`https://huggingface.co/${hf.repo_id}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[11px] text-[#949494] hover:text-white flex items-center gap-1 transition-colors"
-                          >
-                            <span>Hub Card</span>
-                            <ArrowUpRight className="w-3 h-3" />
-                          </a>
-
-                          {isInstalled ? (
-                            <span className="flex items-center space-x-1 text-xs text-emerald-400 font-medium px-2.5 py-1 bg-emerald-500/10 rounded-[11px] border border-emerald-500/20">
-                              <Check className="w-3.5 h-3.5" />
-                              <span>Ready</span>
-                            </span>
-                          ) : (
-                            <Button
+                          {hf.compatibility && (
+                            <Badge
+                              variant={
+                                hf.compatibility.compatibility === 'Compatible'
+                                  ? 'success'
+                                  : hf.compatibility.compatibility === 'Maybe Compatible'
+                                  ? 'warning'
+                                  : 'danger'
+                              }
                               size="sm"
-                              variant="primary"
-                              onClick={() => handleInstallHfModel(hf)}
-                              className="min-w-24 text-xs font-semibold"
+                              className="flex-shrink-0 text-[10px] font-medium px-2 py-0.5"
                             >
-                              <Download className="w-3 h-3" />
-                              <span>1-Click Install</span>
-                            </Button>
+                              {hf.compatibility.compatibility}
+                            </Badge>
                           )}
                         </div>
-                      )}
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
+
+                        <p className="text-[11px] text-[#9a9998] line-clamp-2 leading-relaxed min-h-[32px]">
+                          {hf.description || `${hf.category} open-source model by ${hf.author}.`}
+                        </p>
+
+                        {hf.benchmark_highlight && !hf.benchmark_highlight.toLowerCase().includes('trending on') && (
+                          <div className="px-2.5 py-1 rounded-[7px] bg-amber-950/25 border border-amber-800/35 text-[10px] text-amber-300 font-medium truncate">
+                            ⭐ {hf.benchmark_highlight}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-1.5 p-2 rounded-[9px] bg-black/40 border border-[#222120] text-[11px]">
+                          <div className="flex items-center justify-between text-[#888] px-1">
+                            <span>Downloads:</span>
+                            <span className="text-white font-mono font-medium">{formatNumber(hf.downloads)}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[#888] px-1">
+                            <span>Likes:</span>
+                            <span className="text-white font-mono font-medium">★ {formatNumber(hf.likes)}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[#888] px-1">
+                            <span>Est. Size:</span>
+                            <span className="text-white font-mono font-medium">~{hf.estimated_size_gb} GB</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[#888] px-1">
+                            <span>Format:</span>
+                            <span className="text-[#34888D] font-mono font-medium">{hf.recommended_quantization}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-3 mt-3 border-t border-[#222120]">
+                        {isCurrentlyInstalling ? (
+                          <div className="w-full space-y-1.5 py-0.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="text-[#34888D] font-mono truncate">{prog.status_message}</span>
+                              <span className="text-white font-mono font-bold ml-2">{Math.round(prog.progress_percent)}%</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-[#222120] rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-[#016A71] to-emerald-400 rounded-full transition-all duration-300"
+                                style={{ width: `${Math.max(prog.progress_percent, 5)}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-2">
+                            <a
+                              href={`https://huggingface.co/${hf.repo_id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[11px] text-[#888] hover:text-white flex items-center gap-1 transition-colors flex-shrink-0"
+                            >
+                              <span>Hub Card</span>
+                              <ArrowUpRight className="w-3 h-3 text-[#34888D]" />
+                            </a>
+
+                            {isInstalled ? (
+                              <span className="flex items-center space-x-1 text-[11px] text-emerald-400 font-medium px-2.5 py-1 bg-emerald-500/10 rounded-[9px] border border-emerald-500/20">
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Ready</span>
+                              </span>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                onClick={() => handleInstallHfModel(hf)}
+                                className="min-w-24 text-xs font-semibold py-1 px-3"
+                              >
+                                <Download className="w-3 h-3" />
+                                <span>1-Click Install</span>
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+
+              <div className="flex justify-center pt-4 pb-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLoadMoreHf}
+                  isLoading={isLoadingMoreHf}
+                  className="px-6 py-2 text-xs font-semibold text-zinc-300 hover:text-white border-[#2e2d2c] hover:border-[#34888D]/60 bg-[#161514]"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 mr-2" />
+                  <span>Load More Models from Hugging Face</span>
+                </Button>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -925,7 +1013,7 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
                 type="text"
                 value={datasetSearchQuery}
                 onChange={(e) => setDatasetSearchQuery(e.target.value)}
-                placeholder="Search datasets (e.g. fineweb, gsm8k, code)..."
+                placeholder="Search datasets (e.g. fineweb, gsm8k, code, instruction)..."
                 className="w-full bg-[#171615] border border-[#2a2928] rounded-[11px] pl-9 pr-20 py-2 text-xs text-white placeholder-[#949494] focus:outline-none focus:border-[#34888D]/70"
               />
               <button
@@ -938,74 +1026,112 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
             <span className="text-xs text-[#777]">Open-source training & RAG datasets from Hugging Face</span>
           </div>
 
+          <div className="flex items-center justify-between text-xs text-[#777] px-1">
+            <span>
+              Showing <strong className="text-zinc-200">{hfDatasets.length}</strong> open datasets
+            </span>
+            {datasetSearchQuery && (
+              <button
+                onClick={() => {
+                  setDatasetSearchQuery('');
+                  loadDatasets(36);
+                }}
+                className="text-cyan-400 hover:underline"
+              >
+                Clear search filter
+              </button>
+            )}
+          </div>
+
           {isLoadingDatasets ? (
             <div className="p-12 text-center text-xs text-[#949494] flex items-center justify-center gap-2">
               <RefreshCw className="w-4 h-4 animate-spin text-[#34888D]" />
               <span>Loading open datasets...</span>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {hfDatasets.map((dataset) => (
-                <Card
-                  key={dataset.repo_id}
-                  className="flex flex-col justify-between space-y-4 hover:border-cyan-500/50 transition-all bg-[#121110] border-[#222120]"
-                >
-                  <div className="space-y-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2.5">
-                        <div className="p-2 rounded-[11px] bg-cyan-950/20 border border-cyan-800/40 text-cyan-400">
-                          <Database className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-sm font-semibold text-white truncate max-w-[180px]" title={dataset.dataset_name}>
-                            {dataset.dataset_name}
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {hfDatasets.map((dataset) => (
+                  <Card
+                    key={dataset.repo_id}
+                    className="h-full flex flex-col justify-between p-4 bg-[#121110] border-[#222120] hover:border-cyan-500/40 transition-all rounded-[14px] shadow-sm"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <div className="p-2 rounded-[10px] bg-cyan-950/20 border border-cyan-800/40 text-cyan-400 flex-shrink-0">
+                            <Database className="w-4 h-4" />
                           </div>
-                          <div className="text-xs text-[#888] font-mono truncate max-w-[180px]" title={dataset.repo_id}>
-                            {dataset.repo_id}
+                          <div className="min-w-0 flex-1">
+                            <h4 className="text-xs font-semibold text-white truncate leading-tight" title={dataset.dataset_name}>
+                              {dataset.dataset_name}
+                            </h4>
+                            <span className="text-[11px] text-[#888] font-mono truncate block" title={dataset.repo_id}>
+                              {dataset.author}
+                            </span>
                           </div>
                         </div>
+                        <Badge variant="blue" size="sm" className="text-[10px] px-2 py-0.5 flex-shrink-0">
+                          Dataset
+                        </Badge>
                       </div>
-                      <Badge variant="blue" size="sm">
-                        {dataset.category}
-                      </Badge>
-                    </div>
 
-                    <p className="text-xs text-[#949494] line-clamp-2 leading-relaxed">{dataset.description}</p>
+                      <p className="text-[11px] text-[#9a9998] line-clamp-2 leading-relaxed min-h-[32px]">
+                        {dataset.description}
+                      </p>
 
-                    <div className="p-2.5 rounded-[10px] bg-black/40 border border-[#222120] text-[11px] space-y-1.5 text-[#949494]">
-                      <div className="flex justify-between">
-                        <span>Downloads:</span>
-                        <span className="text-white font-mono">{dataset.downloads.toLocaleString()}</span>
+                      <div className="grid grid-cols-2 gap-1.5 p-2 rounded-[9px] bg-black/40 border border-[#222120] text-[11px]">
+                        <div className="flex items-center justify-between text-[#888] px-1">
+                          <span>Downloads:</span>
+                          <span className="text-white font-mono font-medium">{formatNumber(dataset.downloads)}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[#888] px-1">
+                          <span>Likes:</span>
+                          <span className="text-white font-mono font-medium">★ {formatNumber(dataset.likes)}</span>
+                        </div>
                       </div>
-                      <div className="flex justify-between">
-                        <span>Likes:</span>
-                        <span className="text-white font-mono">{dataset.likes.toLocaleString()}</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {dataset.tags.slice(0, 4).map((tag, idx) => (
-                          <span key={idx} className="px-2 py-0.5 rounded-[6px] bg-[#1c1b1a] text-[#888] text-[10px] border border-[#2a2928]">
-                            #{tag}
+
+                      <div className="flex flex-wrap gap-1 min-h-[22px]">
+                        {dataset.tags.slice(0, 3).map((tag, idx) => (
+                          <span
+                            key={idx}
+                            className="px-2 py-0.5 rounded-[6px] bg-[#1c1b1a] text-[#888] text-[10px] border border-[#2a2928] truncate max-w-[140px]"
+                          >
+                            {tag}
                           </span>
                         ))}
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-[#222120]">
-                    <span className="text-xs text-cyan-400/80 font-mono">Dataset Hub</span>
-                    <a
-                      href={`https://huggingface.co/datasets/${dataset.repo_id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] bg-[#1a1918] hover:bg-[#252423] text-white text-xs font-medium border border-[#2e2d2c] transition-colors"
-                    >
-                      <span>View on Hub</span>
-                      <ArrowUpRight className="w-3 h-3 text-[#34888D]" />
-                    </a>
-                  </div>
-                </Card>
-              ))}
-            </div>
+                    <div className="flex items-center justify-between pt-3 mt-3 border-t border-[#222120]">
+                      <span className="text-[11px] text-cyan-400/80 font-mono">Dataset Hub</span>
+                      <a
+                        href={`https://huggingface.co/datasets/${dataset.repo_id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-[8px] bg-[#1a1918] hover:bg-[#252423] text-white text-[11px] font-medium border border-[#2e2d2c] transition-colors"
+                      >
+                        <span>View on Hub</span>
+                        <ArrowUpRight className="w-3 h-3 text-[#34888D]" />
+                      </a>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="flex justify-center pt-4 pb-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLoadMoreDatasets}
+                  isLoading={isLoadingMoreDatasets}
+                  className="px-6 py-2 text-xs font-semibold text-zinc-300 hover:text-white border-[#2e2d2c] hover:border-cyan-500/60 bg-[#161514]"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 mr-2" />
+                  <span>Load More Datasets from Hugging Face</span>
+                </Button>
+              </div>
+            </>
           )}
         </div>
       )}

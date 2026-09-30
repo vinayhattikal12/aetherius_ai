@@ -427,11 +427,11 @@ class HuggingFaceHubService:
         cls,
         category: Optional[str] = None,
         profile: Optional[HardwareProfile] = None,
-        limit: int = 15,
+        limit: int = 30,
     ) -> List[HuggingFaceModelCard]:
         """
         Fetch live trending open-source models from Hugging Face Hub.
-        Ensures Reasoning, Fast, Coding, and Image Generation tabs always load rich results.
+        Ensures Reasoning, Fast, Coding, and Image Generation tabs always load rich, verified results.
         """
         models: List[HuggingFaceModelCard] = []
         is_filtered = bool(category and category.lower() != "all")
@@ -451,7 +451,7 @@ class HuggingFaceHubService:
                 search_term = "diffusion"
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=7.0) as client:
                 params = {
                     "search": search_term,
                     "sort": "trendingScore",
@@ -472,7 +472,12 @@ class HuggingFaceHubService:
                         
                         cat = cls._detect_category(repo_id, clean_name, params_b)
                         if is_filtered and target_cat.lower() in ("reasoning", "fast", "coding", "image generation"):
-                            cat = target_cat # Tag appropriately for targeted query
+                            cat = target_cat
+
+                        # Build a clean, informative description
+                        desc = item.get("description")
+                        if not desc or len(desc.strip()) < 10:
+                            desc = f"{cat} model with {params_b}B parameters by {author} optimized for local and cloud execution."
 
                         card = HuggingFaceModelCard(
                             repo_id=repo_id,
@@ -483,21 +488,21 @@ class HuggingFaceHubService:
                             downloads=item.get("downloads", 0),
                             likes=item.get("likes", 0),
                             category=cat,
-                            description=f"Trending {cat} open-source model from {author} on Hugging Face Hub.",
+                            description=desc[:160] + ("..." if len(desc) > 160 else ""),
                             ollama_pull_tag=f"hf.co/{repo_id}",
                             recommended_quantization="Q4_K_M",
                             estimated_size_gb=round((params_b * 4.8) / 8.0 + 0.4, 1),
-                            benchmark_highlight="Trending on Hugging Face Hub",
+                            benchmark_highlight=None,
                         )
                         models.append(card)
         except Exception as e:
-            logger.warn(f"Hugging Face live API sync notice: {e}. Using curated catalog.")
+            logger.warning(f"Hugging Face live API sync notice: {e}. Using curated catalog.")
 
         # If filtered, keep matching models
         if is_filtered:
             models = [m for m in models if m.category.lower() == target_cat.lower()]
 
-        # Guarantee at least 4 models per category by merging curated high-performance catalog
+        # Guarantee rich results by merging curated catalog
         for item in FEATURED_HF_MODELS:
             if is_filtered and item["category"].lower() != target_cat.lower():
                 continue
@@ -526,17 +531,17 @@ class HuggingFaceHubService:
         cls,
         query: str,
         profile: Optional[HardwareProfile] = None,
-        limit: int = 12,
+        limit: int = 30,
     ) -> List[HuggingFaceModelCard]:
-        """Search Hugging Face models by query with hardware evaluation."""
+        """Search across all Hugging Face models live by query with hardware evaluation."""
         if not query.strip():
             return await cls.fetch_trending_models(profile=profile, limit=limit)
 
         results: List[HuggingFaceModelCard] = []
         try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 params = {
-                    "search": query,
+                    "search": query.strip(),
                     "limit": limit,
                     "sort": "downloads",
                     "direction": "-1",
@@ -552,6 +557,10 @@ class HuggingFaceHubService:
                         params_b = cls._parse_params_from_id(repo_id)
                         cat = cls._detect_category(repo_id, clean_name, params_b)
 
+                        desc = item.get("description")
+                        if not desc or len(desc.strip()) < 10:
+                            desc = f"{cat} model by {author} on Hugging Face Hub ({params_b}B parameters)."
+
                         card = HuggingFaceModelCard(
                             repo_id=repo_id,
                             author=author,
@@ -561,11 +570,11 @@ class HuggingFaceHubService:
                             downloads=item.get("downloads", 0),
                             likes=item.get("likes", 0),
                             category=cat,
-                            description=f"Hugging Face repository {repo_id}",
+                            description=desc[:160] + ("..." if len(desc) > 160 else ""),
                             ollama_pull_tag=f"hf.co/{repo_id}",
                             recommended_quantization="Q4_K_M",
                             estimated_size_gb=round((params_b * 4.8) / 8.0 + 0.4, 1),
-                            benchmark_highlight="Open-source GGUF",
+                            benchmark_highlight=None,
                         )
                         if profile:
                             card.compatibility = ModelCompatibilityEngine.evaluate(
@@ -580,7 +589,7 @@ class HuggingFaceHubService:
                             )
                         results.append(card)
         except Exception as e:
-            logger.warn(f"Hugging Face search API error: {e}")
+            logger.warning(f"Hugging Face search API error: {e}")
 
         # Fallback local fuzzy match if API failed or few results
         for item in FEATURED_HF_MODELS:
@@ -606,15 +615,33 @@ class HuggingFaceHubService:
     search_hf_models = search_models
 
     @classmethod
+    def clean_dataset_tags(cls, raw_tags: List[str]) -> List[str]:
+        """Cleans raw metadata tag prefixes into user-friendly badges."""
+        cleaned = []
+        for t in raw_tags:
+            # Strip ugly technical prefixes
+            clean_t = re.sub(r"^(task_categories|task_ids|size_categories|format|language|license|modality|benchmark):", "", t).strip()
+            # Skip unhelpful internal tags like 'arxiv:...' or '<1K' or 'croissant'
+            if clean_t.startswith("arxiv:") or clean_t.startswith("region:") or len(clean_t) <= 1:
+                continue
+            # Format nicely
+            clean_t = clean_t.replace("-", " ").replace("_", " ").title()
+            if clean_t not in cleaned:
+                cleaned.append(clean_t)
+            if len(cleaned) >= 3:
+                break
+        return cleaned or ["Dataset"]
+
+    @classmethod
     async def fetch_popular_datasets(
         cls,
         query: Optional[str] = None,
-        limit: int = 15,
+        limit: int = 30,
     ) -> List[HuggingFaceDatasetCard]:
         """Fetch trending and searched datasets from Hugging Face."""
         datasets: List[HuggingFaceDatasetCard] = []
         try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
+            async with httpx.AsyncClient(timeout=7.0) as client:
                 params = {
                     "limit": limit,
                     "sort": "downloads",
@@ -631,25 +658,32 @@ class HuggingFaceHubService:
                             continue
                         author, name = repo_id.split("/", 1)
                         clean_name = name.replace("-", " ").replace("_", " ").title()
+                        desc = item.get("description") or f"Open-source dataset by {author} hosted on Hugging Face Hub."
+                        
+                        raw_tags = item.get("tags", [])
+                        clean_tags = cls.clean_dataset_tags(raw_tags)
+
                         datasets.append(
                             HuggingFaceDatasetCard(
                                 repo_id=repo_id,
                                 author=author,
                                 dataset_name=clean_name,
-                                description=item.get("description") or f"Open-source dataset from {author} on Hugging Face.",
+                                description=desc[:160] + ("..." if len(desc) > 160 else ""),
                                 downloads=item.get("downloads", 0),
                                 likes=item.get("likes", 0),
                                 category=author,
-                                tags=item.get("tags", []),
+                                tags=clean_tags,
                             )
                         )
         except Exception as e:
-            logger.warn(f"Hugging Face dataset API error: {e}")
+            logger.warning(f"Hugging Face dataset API error: {e}")
 
         if len(datasets) < 4:
             for item in FEATURED_HF_DATASETS:
                 if not any(d.repo_id == item["repo_id"] for d in datasets):
-                    datasets.append(HuggingFaceDatasetCard(**item))
+                    clean_item = dict(item)
+                    clean_item["tags"] = cls.clean_dataset_tags(clean_item.get("tags", []))
+                    datasets.append(HuggingFaceDatasetCard(**clean_item))
 
         return datasets
 
