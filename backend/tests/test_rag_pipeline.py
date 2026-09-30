@@ -1,6 +1,8 @@
 import pytest
 from httpx import AsyncClient
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.asyncio
 async def test_knowledge_base_creation_and_search(async_client: AsyncClient):

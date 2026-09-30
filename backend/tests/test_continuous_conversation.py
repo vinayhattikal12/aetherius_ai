@@ -37,6 +37,7 @@ async def test_continuous_anaphora_and_constraint_accumulation():
     assert "comparison" in a4.composite_intents or a4.primary_intent == "comparison"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_continuous_chat_session_api_flow(async_client: AsyncClient):
     # 1. Create session

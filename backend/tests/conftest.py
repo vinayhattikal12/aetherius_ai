@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.pool import NullPool
 
@@ -63,5 +64,10 @@ async def async_client():
 
 @pytest_asyncio.fixture(scope="function")
 async def test_db():
-    async with TestAsyncSessionLocal() as session:
-        yield session
+    try:
+        async with TestAsyncSessionLocal() as session:
+            # Check connection
+            await session.execute(select(1))
+            yield session
+    except Exception as e:
+        pytest.skip(f"Database not available: {e}")

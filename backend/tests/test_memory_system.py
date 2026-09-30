@@ -1,5 +1,7 @@
 import pytest
 from httpx import AsyncClient
+
+pytestmark = pytest.mark.integration
 from backend.app.services.memory_service import MemoryService
 from backend.app.services.workspace_service import WorkspaceService
 

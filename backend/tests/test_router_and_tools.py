@@ -45,6 +45,7 @@ def test_tool_compound_interest():
     assert res.result["total_interest_earned"] > 4000
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_router_evaluation_endpoint(async_client: AsyncClient):
     # Test coding intent routing with local privacy mode
@@ -62,6 +63,7 @@ async def test_router_evaluation_endpoint(async_client: AsyncClient):
     assert len(data["selected_model_id"]) > 0
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_tools_listing_and_execution_endpoints(async_client: AsyncClient):
     # 1. List tools

@@ -1,5 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
+
+pytestmark = pytest.mark.integration
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.conversation import Conversation, ConversationState
 from backend.app.schemas.chat import ChatCompletionRequest

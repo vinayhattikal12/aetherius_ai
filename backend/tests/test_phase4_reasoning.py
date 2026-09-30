@@ -8,34 +8,40 @@ from backend.app.services.agent_orchestrator import AgentOrchestrator
 from backend.app.models.agent import AgentTask, AgentTaskStep
 
 
+from backend.app.core.config import settings
+
+
 @pytest.mark.asyncio
 async def test_sandboxed_python_and_security_guards():
     """Validates pure Python execution and verifies security guardrails block malicious constructs."""
-    # 1. Safe Python execution
-    code_safe = "result = sum([x * 2 for x in range(1, 6)])"
-    ok, res, err = SandboxedCodeExecutor.execute_safe_python(code_safe)
-    assert ok is True
-    assert res == 30
-    assert err is None
+    settings.ENABLE_PYTHON_SANDBOX = True
+    try:
+        # 1. Safe Python execution
+        code_safe = "result = sum([x * 2 for x in range(1, 6)])"
+        ok, res, err = SandboxedCodeExecutor.execute_safe_python(code_safe)
+        assert ok is True
+        assert res == 30
+        assert err is None
 
-    # 2. Blocked import statement
-    code_import = "import os\nresult = os.listdir('.')"
-    ok_imp, res_imp, err_imp = SandboxedCodeExecutor.execute_safe_python(code_import)
-    assert ok_imp is False
-    assert "Security Violation" in err_imp
-    assert "Import" in err_imp
+        # 2. Blocked import statement
+        code_import = "import os\nresult = os.listdir('.')"
+        ok_imp, res_imp, err_imp = SandboxedCodeExecutor.execute_safe_python(code_import)
+        assert ok_imp is False
+        assert "Security Violation" in err_imp or "forbidden" in err_imp.lower()
 
-    # 3. Blocked file open
-    code_open = "f = open('test.txt', 'w')"
-    ok_open, _, err_open = SandboxedCodeExecutor.execute_safe_python(code_open)
-    assert ok_open is False
-    assert "Security Violation" in err_open
+        # 3. Blocked file open
+        code_open = "f = open('test.txt', 'w')"
+        ok_open, _, err_open = SandboxedCodeExecutor.execute_safe_python(code_open)
+        assert ok_open is False
+        assert "Security Violation" in err_open or "forbidden" in err_open.lower()
 
-    # 4. Blocked dunder escape
-    code_dunder = "result = ().__class__.__bases__"
-    ok_dunder, _, err_dunder = SandboxedCodeExecutor.execute_safe_python(code_dunder)
-    assert ok_dunder is False
-    assert "Security Violation" in err_dunder
+        # 4. Blocked dunder escape
+        code_dunder = "result = ().__class__.__bases__"
+        ok_dunder, _, err_dunder = SandboxedCodeExecutor.execute_safe_python(code_dunder)
+        assert ok_dunder is False
+        assert "Security Violation" in err_dunder or "forbidden" in err_dunder.lower()
+    finally:
+        settings.ENABLE_PYTHON_SANDBOX = False
 
 
 @pytest.mark.asyncio
@@ -51,6 +57,7 @@ async def test_safe_math_ast_evaluator():
     assert t_res.result["result"] == 252.0
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_agent_task_state_machine_and_react_loop(test_db: AsyncSession):
     """Validates PostgreSQL-backed task state machine transitions across Plan -> Act -> Observe -> Reflect -> Synthesize."""

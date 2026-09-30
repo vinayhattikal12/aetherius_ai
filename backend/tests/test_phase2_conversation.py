@@ -153,6 +153,7 @@ async def test_multi_turn_constraint_accumulation():
     assert accumulated["format"] == "table"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_conversation_state_postgres_roundtrip(test_db: AsyncSession):
     """Tests saving, updating, and reloading ConversationState in PostgreSQL."""

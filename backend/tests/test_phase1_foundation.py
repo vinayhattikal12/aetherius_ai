@@ -83,6 +83,7 @@ async def test_transparent_failure_when_providers_offline():
         assert "Core Principle & Definition" not in err_msg
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_real_model_generation_flow(test_db: AsyncSession):
     """Verify real instruction following and code generation flow through ChatService."""

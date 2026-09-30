@@ -40,6 +40,7 @@ async def test_chat_file_upload_image(async_client: AsyncClient):
     assert "data:image/png;base64," in data["preview_url"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_chat_completion_with_attachments_and_persistence(async_client: AsyncClient):
     # 1. Upload Document

@@ -21,7 +21,7 @@ async def test_disallowed_cross_origin_rejected():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         headers = {"Origin": "https://malicious-tracker-site.com"}
-        response = await ac.get("/api/v1/workspaces/", headers=headers)
+        response = await ac.get("/api/v1/diagnostics/last-requests", headers=headers)
         assert response.status_code == 403
         assert "forbidden" in response.json()["detail"].lower()
 
@@ -35,7 +35,7 @@ async def test_allowed_origin_with_token_succeeds():
             "Origin": "http://localhost:5173",
             "Authorization": f"Bearer {LAUNCH_TOKEN}"
         }
-        response = await ac.get("/api/v1/workspaces/", headers=headers)
+        response = await ac.get("/api/v1/diagnostics/last-requests", headers=headers)
         # Should be 200 OK
         assert response.status_code == 200
 
@@ -51,5 +51,5 @@ async def test_strict_token_auth_mode():
                 "Origin": "http://localhost:5173",
                 "Authorization": "Bearer invalid-wrong-token"
             }
-            response = await ac.get("/api/v1/workspaces/", headers=headers)
+            response = await ac.get("/api/v1/diagnostics/last-requests", headers=headers)
             assert response.status_code == 401

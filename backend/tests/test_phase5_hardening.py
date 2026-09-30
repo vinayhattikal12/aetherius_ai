@@ -23,6 +23,7 @@ def test_prompt_injection_inspection():
     assert mal_check["risk_level"] == "high"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_audit_logging_endpoints(async_client: AsyncClient):
     # 1. Record Audit Log
@@ -45,6 +46,7 @@ async def test_audit_logging_endpoints(async_client: AsyncClient):
     assert any(l["event_type"] == "security_pii_masked" for l in logs)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_export_and_diagnostics_endpoints(async_client: AsyncClient):
     # 1. Create a conversation

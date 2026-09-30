@@ -7,6 +7,7 @@ from backend.app.services.hardware_detector import HardwareDetector
 from backend.app.schemas.knowledge import KnowledgeBaseCreate
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_real_time_sse_streaming_protocol(async_client: AsyncClient):
     """Validates real-time Server-Sent Events (SSE) token and metadata streaming protocol."""
@@ -61,6 +62,7 @@ async def test_real_time_sse_streaming_protocol(async_client: AsyncClient):
         assert token_count > 0, "Stream must emit incremental 'token' events."
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_pgvector_rag_ingestion_and_similarity_retrieval(test_db: AsyncSession):
     """Validates document ingestion, chunking, vector embeddings, and similarity retrieval in PostgreSQL."""
