@@ -99,10 +99,21 @@ class ModelCompatibilityEngine:
                 reasons.append(f"Model will split layers between GPU VRAM ({total_vram:.1f} GB) and System RAM ({total_ram:.1f} GB).")
             else:
                 recommended_exec = "Local (CPU/RAM)"
-                perf_tier = "Moderate / Usable" if profile.cpu.physical_cores >= 6 else "Slow / Heavy"
-                status = "Compatible" if total_ram >= (estimated_mem + 4.0) else "Maybe Compatible"
-                score = 70 if status == "Compatible" else 55
-                reasons.append(f"Model will run on CPU with {total_ram:.1f} GB RAM ({profile.cpu.physical_cores} CPU cores).")
+                if params_b <= 3.5:
+                    perf_tier = "Fast / Fluid (Ultra-Low Latency)"
+                    status = "Recommended"
+                    score = 95
+                    reasons.append(f"Lightweight model ({params_b}B) tailored for snappy CPU execution (<0.3s latency).")
+                elif params_b <= 8.5:
+                    perf_tier = "Moderate / Balanced"
+                    status = "Compatible"
+                    score = 75
+                    reasons.append(f"Medium model ({params_b}B) runs at ~8 tok/s on your CPU with {total_ram:.1f} GB RAM.")
+                else:
+                    perf_tier = "Slow / Heavy on CPU"
+                    status = "Heavyweight (GPU Recommended)"
+                    score = 35
+                    reasons.append(f"Large model ({params_b}B) requires significant memory bandwidth. Discrete NVIDIA GPU recommended.")
                 recommended_quant = "Q4_K_M"
         else:
             # Memory constrained

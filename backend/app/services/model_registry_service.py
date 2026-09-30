@@ -124,10 +124,10 @@ DEFAULT_MODELS = [
         "tool_calling_capable": True,
         "embedding_capable": False,
         "category": "Coding",
-        "description": "Enterprise-grade high-precision coding model with deep repo comprehension and architectural refactoring.",
+        "description": "Enterprise-grade 14B coding powerhouse. High RAM & dedicated GPU recommended for fluid execution.",
         "is_local": True,
         "is_installed": False,
-        "is_recommended": True,
+        "is_recommended": False,
     },
     {
         "name": "mistral:7b",
