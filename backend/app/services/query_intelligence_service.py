@@ -116,6 +116,28 @@ class QueryIntelligenceService:
         for intent, text in INTENT_CENTROIDS.items()
     }
 
+    SEMANTIC_ANCHORS = {
+        "stable_conceptual": (
+            "definition define overview explanation meaning concept fundamentals syntax components "
+            "variables functions recursion loops data structure algorithm programming tutorial useful "
+            "purpose benefits why advantages principles theoretical virtual dom primitives build advice tips introduction philosophy"
+        ),
+        "volatile_temporal": (
+            "latest current recently today yesterday upcoming breaking news update changelog "
+            "changes new features status announcement release launched launch roadmap state of ecosystem "
+            "catch me up diff new in version modern trends price who won election score weather live"
+        ),
+        "entity_fact": (
+            "company organization business startup firm person biography founder ceo net worth "
+            "headquarters revenue valuation website profile products services client employee location tell me about"
+        ),
+    }
+
+    _anchor_embeddings: Dict[str, List[float]] = {
+        k: EmbeddingService._generate_semantic_vector(v)
+        for k, v in SEMANTIC_ANCHORS.items()
+    }
+
     @classmethod
     def normalize_text(cls, raw: str) -> str:
         if not raw:
@@ -230,44 +252,46 @@ class QueryIntelligenceService:
             or any(k in lower_c for k in ["step by step", "proof", "derive", "algorithm", "trade-off", "why", "root cause"])
         )
 
+        # 6. Semantic Volatility & Knowledge Layer Proximity
+        s_sim = EmbeddingService.cosine_similarity(query_emb, cls._anchor_embeddings["stable_conceptual"])
+        v_sim = EmbeddingService.cosine_similarity(query_emb, cls._anchor_embeddings["volatile_temporal"])
+        e_sim = EmbeddingService.cosine_similarity(query_emb, cls._anchor_embeddings["entity_fact"])
+
+        # Knowledge Volatility & Freshness Signal (paraphrases, ecosystem shifts, live data)
+        is_volatile = (v_sim > s_sim and v_sim > 0.05) or (v_sim > 0.18)
+
+        # Entity Fact & Grounding Requirement (specific factual lookup for companies, persons, or real-world entities)
+        has_org_or_person = any(
+            info.get("type") in ["organization", "person", "named_entity"]
+            for info in extracted_entities_dict.values()
+        )
+        is_entity_lookup = (
+            (has_org_or_person or any(k in lower_c for k in ["solutions", "technologies", "inc", "ltd", "corp"]))
+            and (
+                any(k in lower_c for k in ["tell me about", "who is", "ceo", "founder", "net worth", "headquarters", "revenue", "overview of", "profile of", "services", "products of"])
+                or (e_sim > s_sim and e_sim > 0.12)
+            )
+            and not any(k in lower_c for k in ["how to", "how do i", "how can i", "i want to", "steps to", "guide to", "advice on", "tips for"])
+        )
+
+        is_entity_query = is_entity_lookup
         is_definition_question = (
             lower_c.startswith("what is") or lower_c.startswith("explain") or lower_c.startswith("who is") or lower_c.startswith("define")
         )
 
-        # Entity overview intent detection (factual query about a company, person, or real-world organization)
-        is_entity_query = (
-            has_real_world_entity
-            and any(k in lower_c for k in ["tell me about", "who is", "what is", "overview", "founded", "ceo", "founder", "services", "products", "what does", "where is", "biography", "net worth", "headquarters", "profile of", "history of"])
-            and not any(k in lower_c for k in ["how to", "how do i", "how can i", "i want to", "steps to", "guide to", "advice on", "tips for"])
-            and not any(k in lower_c for k in ["loop in", "recursion in", "variable in", "class in python", "syntax for", "algorithm for"])
+        # Stable Conceptual / Advisory Filter (programming fundamentals, tutorials, conceptual architecture)
+        is_conceptual_explanation = (
+            (s_sim >= v_sim)
+            and not is_volatile
+            and not is_entity_lookup
+        ) or (
+            any(lower_c.startswith(k) for k in ["how to", "how can i", "how do i", "i want to", "steps to", "guide to", "why is", "what is a", "what are", "explain how"])
+            and not is_volatile
+            and not is_entity_lookup
         )
 
-        # Temporal / Current / Real-World Information Detection
-        temporal_cues = [
-            "latest", "current", "today", "yesterday", "news", "recent", "who won", "weather",
-            "released", "launch", "announced", "2024", "2025", "2026", "stock price",
-            "market update", "score", "schedule", "new features in", "changelog", "roadmap",
-            "search web", "google", "search for", "look up", "find out"
-        ]
-        has_temporal_or_search_cue = any(k in lower_c for k in temporal_cues)
-
-        # General conceptual / advisory questions (e.g. "how to build a company", "how to write a loop") do NOT need web search
-        is_general_advisory_or_how_to = (
-            any(k in lower_c for k in ["how to", "how can i", "steps to", "how do i", "guide to", "advice on", "tips for", "i want to", "ways to", "best way to"])
-            and not has_temporal_or_search_cue
-            and not (has_real_world_entity and is_entity_query)
-        )
-
-        # Automatic Search Trigger: True ONLY when external / temporal / real-world facts are sought
-        is_search = (
-            (has_temporal_or_search_cue or is_entity_query or scores.get("web_search", 0) > 0.65)
-            and not is_general_advisory_or_how_to
-            and not (
-                is_definition_question
-                and any(k in lower_c for k in ["loop", "recursion", "oop", "polymorphism", "array", "linked list", "binary search", "async/await", "promise"])
-                and not has_temporal_or_search_cue
-            )
-        )
+        # Final Search Determination: Provider-independent intelligent search decision
+        is_search = (is_volatile or is_entity_lookup or scores.get("web_search", 0) > 0.65) and not is_conceptual_explanation
 
         is_fast = (
             scores.get("fast_lookup", 0) > 0.70 

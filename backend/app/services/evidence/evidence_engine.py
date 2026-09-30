@@ -68,22 +68,18 @@ class SourceEvidenceEngine:
 
     @classmethod
     def calculate_freshness_score(cls, text: str, url: str) -> float:
-        """Detects date cues and recency indicators in the source content."""
+        """Detects date cues and recency indicators dynamically in the source content."""
+        from datetime import datetime, timezone
+        curr_year = datetime.now(timezone.utc).year
         combined = f"{url} {text}".lower()
 
-        # Check for current/recent year mentions (e.g. 2026, 2025)
-        if "2026" in combined:
-            return 0.95
-        if "2025" in combined:
-            return 0.85
-        if "2024" in combined:
-            return 0.70
-        if "yesterday" in combined or "today" in combined or "hours ago" in combined:
+        # Dynamic recency evaluation
+        if str(curr_year) in combined or "today" in combined or "hours ago" in combined or "just now" in combined:
             return 1.0
-        if "days ago" in combined or "week ago" in combined:
-            return 0.90
-        if "month ago" in combined:
-            return 0.75
+        if str(curr_year - 1) in combined or "yesterday" in combined or "days ago" in combined or "week ago" in combined:
+            return 0.88
+        if str(curr_year - 2) in combined or "month ago" in combined or "months ago" in combined:
+            return 0.72
 
         return 0.50
 

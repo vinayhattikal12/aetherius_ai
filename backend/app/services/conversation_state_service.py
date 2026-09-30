@@ -192,31 +192,31 @@ class ConversationStateService:
                     formatted_name = "pgvector"
                 entities[formatted_name] = {"type": "technology", "mentions": 1}
 
-        # 4. Known/Pattern-based Organizations & Companies
+        # 4. Pattern-based & Known Global Organizations
         known_orgs = [
-            "erbrains", "erbrains it solutions", "google", "microsoft", "apple", "openai", "anthropic",
+            "google", "microsoft", "apple", "openai", "anthropic",
             "meta", "nvidia", "amazon", "tesla", "oracle", "ibm", "intel", "salesforce", "adobe",
             "snowflake", "databricks", "stripe", "uber", "spacex", "deepmind", "alibaba", "bytedance",
             "github", "gitlab", "huggingface", "mistral ai", "stability ai"
         ]
         for org in known_orgs:
             if re.search(rf"\b{re.escape(org)}\b", lower_text):
-                formatted_org = "ERBrains" if org.startswith("erbrains") else " ".join(w.capitalize() for w in org.split())
+                formatted_org = " ".join(w.capitalize() for w in org.split())
                 entities[formatted_org] = {"type": "organization", "mentions": 1}
 
-        # Match capitalized phrases like "Acme Company", "Tata Technologies", "Infosys Solutions", "Stripe Inc", "OpenAI LLC"
-        org_pattern = r"\b([A-Z][a-zA-Z0-9_\-]+(?:\s+[A-Z][a-zA-Z0-9_\-]+)*)\s+(Company|Technologies|Solutions|Technologies Pvt Ltd|Solutions Pvt Ltd|Inc\.?|Corp\.?|Corporation|Ltd\.?|Pvt Ltd|LLC|Labs|Enterprises|Firm|Consulting|Group)\b"
+        # Match generic organization phrases worldwide (e.g. "Acme Corp", "Tata Technologies", "DeepMind Technologies", "Stripe Inc", "erbrains it solutions")
+        clean_text_prefix = re.sub(r"^(tell\s+me\s+about|what\s+is|who\s+is|overview\s+of|profile\s+of)\s+", "", text, flags=re.IGNORECASE).strip()
+        org_pattern = r"\b([a-zA-Z0-9_\-]+(?:\s+[a-zA-Z0-9_\-]+){0,3})\s+(Company|Technologies|Solutions|Technologies Pvt Ltd|Solutions Pvt Ltd|Inc\.?|Corp\.?|Corporation|Ltd\.?|Pvt Ltd|LLC|Labs|Enterprises|Firm|Consulting|Group)\b"
         org_stopwords = {"want", "build", "create", "start", "run", "make", "an", "a", "the", "our", "my", "your", "good", "new", "top", "best", "small", "big", "ai", "tech", "software", "product", "service"}
-        for match in re.finditer(org_pattern, text):
+        for match in re.finditer(org_pattern, clean_text_prefix, flags=re.IGNORECASE):
             org_name = match.group(1).strip()
             org_words = [w.lower() for w in org_name.split()]
             if len(org_name) > 1 and not all(w in org_stopwords for w in org_words) and org_name.lower() not in ["the", "a", "an", "this", "that"]:
-                entities[f"{org_name} {match.group(2)}"] = {"type": "organization", "mentions": 1}
+                entities[f"{org_name.title()} {match.group(2).title()}"] = {"type": "organization", "mentions": 1}
 
-        # 5. People names detection (e.g. after 'who is', 'CEO of', 'founder of', 'architect', 'lead')
+        # 5. Generic People names detection (titles, roles, attribution patterns, or capitalized full names)
         person_patterns = [
-            r"\b(?:who\s+is|ceo\s+(?:of\s+)?|founder\s+(?:of\s+)?|created\s+by\s+|architect\s+|director\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b",
-            r"\b(Vinay(?:\s+[A-Z][a-z]+)*)\b",
+            r"\b(?:who\s+is|ceo\s+(?:of\s+)?|founder\s+(?:of\s+)?|created\s+by\s+|authored\s+by\s+|written\s+by\s+|architect\s+|director\s+|mr\.?\s+|ms\.?\s+|mrs\.?\s+|dr\.?\s+|prof\.?\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b",
         ]
         for p_pat in person_patterns:
             for match in re.finditer(p_pat, text):

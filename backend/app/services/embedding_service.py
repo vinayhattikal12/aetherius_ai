@@ -103,25 +103,39 @@ class EmbeddingService:
             arr = arr / norm
         return arr.tolist()
 
+    STOP_WORDS = {
+        "a", "an", "the", "is", "are", "was", "were", "in", "on", "at", "to", "for", "of", "with", 
+        "by", "as", "into", "like", "through", "after", "over", "between", "out", "against", "during", 
+        "without", "before", "under", "around", "among", "i", "you", "he", "she", "it", "we", "they", 
+        "me", "him", "her", "us", "them", "my", "your", "his", "our", "their", "which", "whom", 
+        "this", "that", "these", "those", "am", "be", "been", "being", "have", "has", "had", "having", 
+        "do", "does", "did", "doing", "can", "could", "should", "would", "will", "shall", "may", "might", 
+        "must"
+    }
+
     @classmethod
     def _generate_semantic_vector(cls, text: str, dim: int = 384) -> List[float]:
         if not text:
             return [0.0] * dim
-        words = text.lower().split()
+        import re
+        tokens = re.findall(r"[a-zA-Z0-9_\-\.\+]+", text.lower())
+        words = [t for t in tokens if t not in cls.STOP_WORDS and len(t) > 1]
+        if not words:
+            words = tokens
         vec = np.zeros(dim, dtype=np.float32)
 
         for w in words:
             h_word = int(hashlib.md5(w.encode("utf-8")).hexdigest(), 16)
             idx = h_word % dim
             sign = 1.0 if (h_word // dim) % 2 == 0 else -1.0
-            vec[idx] += sign * 1.5
+            vec[idx] += sign * 2.0
 
             for i in range(len(w) - 2):
                 tri = w[i : i + 3]
                 h_tri = int(hashlib.sha256(tri.encode("utf-8")).hexdigest(), 16)
                 idx_tri = h_tri % dim
                 sign_tri = 1.0 if (h_tri // dim) % 2 == 0 else -1.0
-                vec[idx_tri] += sign_tri * 0.5
+                vec[idx_tri] += sign_tri * 0.4
 
         norm = np.linalg.norm(vec)
         if norm > 0:
