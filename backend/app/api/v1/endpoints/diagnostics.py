@@ -87,3 +87,15 @@ async def get_system_diagnostics(db: AsyncSession = Depends(get_db)) -> Dict[str
     }
 
     return diagnostics
+
+
+@router.get("/last-requests")
+async def get_last_requests(limit: int = 20) -> Dict[str, Any]:
+    """Returns timing and performance records from the in-memory ring buffer (Task 1.2)."""
+    from backend.app.services.diagnostics_service import DiagnosticsService
+    records = DiagnosticsService.get_last_requests(limit=limit)
+    return {
+        "count": len(records),
+        "limit": limit,
+        "requests": records
+    }

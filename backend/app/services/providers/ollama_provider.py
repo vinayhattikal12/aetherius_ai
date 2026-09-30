@@ -222,6 +222,27 @@ class OllamaProvider(BaseModelProvider):
             )
             if res.status_code == 200:
                 data = res.json()
+                s = 1e9
+                gen_s = max(data.get("eval_duration", 0) / s, 0.001)
+                load_s = data.get("load_duration", 0) / s
+                prompt_eval_s = data.get("prompt_eval_duration", 0) / s
+                tok_s = round(data.get("eval_count", 0) / gen_s, 2)
+                self.last_metrics = {
+                    "load_duration": data.get("load_duration", 0),
+                    "prompt_eval_count": data.get("prompt_eval_count", 0),
+                    "prompt_eval_duration": data.get("prompt_eval_duration", 0),
+                    "eval_count": data.get("eval_count", 0),
+                    "eval_duration": data.get("eval_duration", 0),
+                    "tok_s": tok_s,
+                    "load_s": load_s,
+                }
+                logger.info(
+                    f"[ollama] model={target_model} load={load_s:.2f}s "
+                    f"prompt_tokens={data.get('prompt_eval_count')} "
+                    f"prompt_eval={prompt_eval_s:.2f}s "
+                    f"gen_tokens={data.get('eval_count')} gen={gen_s:.2f}s "
+                    f"tok/s={tok_s:.1f}"
+                )
                 return data.get("message", {}).get("content", "")
             raise RuntimeError(f"Ollama returned HTTP {res.status_code}: {res.text}")
 
@@ -278,6 +299,28 @@ class OllamaProvider(BaseModelProvider):
                             token = chunk.get("message", {}).get("content", "")
                             if token:
                                 yield token
+                            if chunk.get("done"):
+                                s = 1e9
+                                gen_s = max(chunk.get("eval_duration", 0) / s, 0.001)
+                                load_s = chunk.get("load_duration", 0) / s
+                                prompt_eval_s = chunk.get("prompt_eval_duration", 0) / s
+                                tok_s = round(chunk.get("eval_count", 0) / gen_s, 2)
+                                self.last_metrics = {
+                                    "load_duration": chunk.get("load_duration", 0),
+                                    "prompt_eval_count": chunk.get("prompt_eval_count", 0),
+                                    "prompt_eval_duration": chunk.get("prompt_eval_duration", 0),
+                                    "eval_count": chunk.get("eval_count", 0),
+                                    "eval_duration": chunk.get("eval_duration", 0),
+                                    "tok_s": tok_s,
+                                    "load_s": load_s,
+                                }
+                                logger.info(
+                                    f"[ollama] model={target_model} load={load_s:.2f}s "
+                                    f"prompt_tokens={chunk.get('prompt_eval_count')} "
+                                    f"prompt_eval={prompt_eval_s:.2f}s "
+                                    f"gen_tokens={chunk.get('eval_count')} gen={gen_s:.2f}s "
+                                    f"tok/s={tok_s:.1f}"
+                                )
                         except Exception:
                             pass
 

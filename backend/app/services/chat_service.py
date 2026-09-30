@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 import uuid
 from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,7 @@ from backend.app.services.image_gen_service import ImageGenService, ImageGenerat
 from backend.app.services.conversation_state_service import ConversationStateService
 from backend.app.services.query_intelligence_service import QueryIntelligenceService
 from backend.app.services.evidence import AnswerValidationEngine
+from backend.app.services.diagnostics_service import DiagnosticsService, RequestTimingRecord, time_stage
 from backend.app.services.providers.model_manager import model_manager
 from backend.app.core.logging import logger
 
@@ -75,6 +77,8 @@ class ChatService:
         request: ChatCompletionRequest,
     ) -> ChatCompletionResponse:
         request_id = str(uuid.uuid4())
+        t_req_start = time.perf_counter()
+        stages_ms: Dict[str, float] = {}
 
         # =========================================================================
         # STEP 1 & 2: Load Conversation, Recent History, State, Workspace, Memory
@@ -147,13 +151,14 @@ class ChatService:
         # =========================================================================
         # STEP 3, 4, 5 & 6: Conversation Understanding, Anaphora, Task Plan
         # =========================================================================
-        q_analysis = await QueryIntelligenceService.analyze_query(
-            user_message=request.message,
-            conversation_history=recent_history,
-            workspace_slug=request.workspace_slug,
-            conversation_state=conv_state,
-            request_id=request_id
-        )
+        with time_stage(stages_ms, "query_analysis"):
+            q_analysis = await QueryIntelligenceService.analyze_query(
+                user_message=request.message,
+                conversation_history=recent_history,
+                workspace_slug=request.workspace_slug,
+                conversation_state=conv_state,
+                request_id=request_id
+            )
         resolved_task: ResolvedTask = q_analysis.resolved_task
 
         # Process attachments
@@ -183,18 +188,19 @@ class ChatService:
         # Autonomous Visual Generation if requested
         generated_image_url: Optional[str] = None
         if resolved_task.is_visual:
-            try:
-                v_prompt = resolved_task.visual_prompt or request.message
-                img_res = await ImageGenService.generate_image(
-                    ImageGenerationRequest(
-                        prompt=v_prompt,
-                        workspace_slug=request.workspace_slug,
-                        style_preset="diagram" if ("diagram" in v_prompt.lower() or "architecture" in v_prompt.lower() or "neural" in v_prompt.lower()) else "photorealistic"
+            with time_stage(stages_ms, "image"):
+                try:
+                    v_prompt = resolved_task.visual_prompt or request.message
+                    img_res = await ImageGenService.generate_image(
+                        ImageGenerationRequest(
+                            prompt=v_prompt,
+                            workspace_slug=request.workspace_slug,
+                            style_preset="diagram" if ("diagram" in v_prompt.lower() or "architecture" in v_prompt.lower() or "neural" in v_prompt.lower()) else "photorealistic"
+                        )
                     )
-                )
-                generated_image_url = img_res.preview_url or img_res.image_url
-            except Exception as e:
-                logger.warning(f"Visual illustration notice: {e}")
+                    generated_image_url = img_res.preview_url or img_res.image_url
+                except Exception as e:
+                    logger.warning(f"Visual illustration notice: {e}")
 
         # =========================================================================
         # STEP 7: Model & Execution Routing based on authoritative ResolvedTask
@@ -204,18 +210,19 @@ class ChatService:
         model_to_use = request.model_name
 
         if not model_to_use or model_to_use == "auto":
-            route_plan = await ModelRouter.evaluate_routing(
-                db=db,
-                request=RouterEvaluationRequest(
-                    prompt=resolved_task.canonical_query,
-                    workspace_slug=request.workspace_slug,
-                    privacy_mode=resolved_task.privacy_mode
-                ),
-                resolved_task=resolved_task
-            )
-            model_to_use = route_plan.selected_model_id
-            routing_reason = route_plan.routing_reason
-            execution_mode = route_plan.execution_mode
+            with time_stage(stages_ms, "router"):
+                route_plan = await ModelRouter.evaluate_routing(
+                    db=db,
+                    request=RouterEvaluationRequest(
+                        prompt=resolved_task.canonical_query,
+                        workspace_slug=request.workspace_slug,
+                        privacy_mode=resolved_task.privacy_mode
+                    ),
+                    resolved_task=resolved_task
+                )
+                model_to_use = route_plan.selected_model_id
+                routing_reason = route_plan.routing_reason
+                execution_mode = route_plan.execution_mode
 
         # =========================================================================
         # STEP 8: Tool & Retrieval Execution based on TaskPlan
@@ -267,12 +274,13 @@ class ChatService:
             return []
 
         # Execute pre-flight retrieval concurrently
-        workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
-            fetch_workspace(),
-            fetch_memories(),
-            fetch_rag(),
-            fetch_web()
-        )
+        with time_stage(stages_ms, "retrieval"):
+            workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
+                fetch_workspace(),
+                fetch_memories(),
+                fetch_rag(),
+                fetch_web()
+            )
 
         workspace_instructions = workspace_obj.instructions if workspace_obj else "You are Aetherius AI."
         workspace_name = workspace_obj.name if workspace_obj else "General"
@@ -302,19 +310,20 @@ class ChatService:
             "last_user_goal": resolved_task.canonical_query,
         }
 
-        assembled = ContextEngine.assemble_context(
-            model_context_limit=8192,
-            max_output_tokens=request.max_tokens or 2048,
-            workspace_name=workspace_name,
-            workspace_instructions=workspace_instructions,
-            memories=retrieved_memories,
-            rag_chunks=rag_chunks,
-            web_results=web_results,
-            chat_history=recent_history,
-            current_user_message=effective_user_message,
-            accumulated_constraints=resolved_task.accumulated_constraints,
-            conversation_state=state_payload
-        )
+        with time_stage(stages_ms, "context"):
+            assembled = ContextEngine.assemble_context(
+                model_context_limit=8192,
+                max_output_tokens=request.max_tokens or 2048,
+                workspace_name=workspace_name,
+                workspace_instructions=workspace_instructions,
+                memories=retrieved_memories,
+                rag_chunks=rag_chunks,
+                web_results=web_results,
+                chat_history=recent_history,
+                current_user_message=effective_user_message,
+                accumulated_constraints=resolved_task.accumulated_constraints,
+                conversation_state=state_payload
+            )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
         messages_payload.extend(assembled["fitted_history"])
@@ -334,49 +343,50 @@ class ChatService:
         retries = 0
         max_retries = 1
 
-        while retries <= max_retries:
-            try:
-                assistant_content, exec_meta = await model_manager.generate_response_with_metadata(
-                    messages=messages_payload,
-                    model_name=model_to_use or "llama3.2:3b",
-                    temperature=request.temperature,
-                    max_tokens=request.max_tokens,
-                    requested_mode="auto" if not request.model_name or request.model_name == "auto" else "manual"
+        with time_stage(stages_ms, "generation"):
+            while retries <= max_retries:
+                try:
+                    assistant_content, exec_meta = await model_manager.generate_response_with_metadata(
+                        messages=messages_payload,
+                        model_name=model_to_use or "llama3.2:3b",
+                        temperature=request.temperature,
+                        max_tokens=request.max_tokens,
+                        requested_mode="auto" if not request.model_name or request.model_name == "auto" else "manual"
+                    )
+                    exec_meta_dict = exec_meta.to_dict()
+                except Exception as e:
+                    logger.error(f"Model execution error: {e}")
+                    assistant_content = (
+                        f"I couldn't complete the request because the selected model ({model_to_use}) is unavailable "
+                        f"and no reachable fallback provider was configured. Details: {str(e)}"
+                    )
+                    exec_meta_dict = {
+                        "requested_mode": "auto" if not request.model_name or request.model_name == "auto" else "manual",
+                        "selected_model": model_to_use,
+                        "actual_model": "none",
+                        "provider": "none",
+                        "runtime": "offline",
+                        "fallback_used": False,
+                        "reason": str(e)
+                    }
+                    break
+
+                # Validate response against constraints & grounding
+                val_report = AnswerValidationEngine.validate_response(
+                    response_text=assistant_content,
+                    constraints=resolved_task.accumulated_constraints,
+                    available_sources=[c.model_dump() for c in citations],
+                    evidence_chunks=evidence_text_list
                 )
-                exec_meta_dict = exec_meta.to_dict()
-            except Exception as e:
-                logger.error(f"Model execution error: {e}")
-                assistant_content = (
-                    f"I couldn't complete the request because the selected model ({model_to_use}) is unavailable "
-                    f"and no reachable fallback provider was configured. Details: {str(e)}"
-                )
-                exec_meta_dict = {
-                    "requested_mode": "auto" if not request.model_name or request.model_name == "auto" else "manual",
-                    "selected_model": model_to_use,
-                    "actual_model": "none",
-                    "provider": "none",
-                    "runtime": "offline",
-                    "fallback_used": False,
-                    "reason": str(e)
-                }
-                break
 
-            # Validate response against constraints & grounding
-            val_report = AnswerValidationEngine.validate_response(
-                response_text=assistant_content,
-                constraints=resolved_task.accumulated_constraints,
-                available_sources=[c.model_dump() for c in citations],
-                evidence_chunks=evidence_text_list
-            )
+                if val_report.is_valid or retries == max_retries:
+                    break
 
-            if val_report.is_valid or retries == max_retries:
-                break
-
-            # Attempt repair for constraint violation
-            retries += 1
-            logger.info(f"Self-repair attempt {retries}/{max_retries}: {val_report.issues}")
-            messages_payload.append({"role": "assistant", "content": assistant_content})
-            messages_payload.append({"role": "user", "content": val_report.repair_instruction})
+                # Attempt repair for constraint violation
+                retries += 1
+                logger.info(f"Self-repair attempt {retries}/{max_retries}: {val_report.issues}")
+                messages_payload.append({"role": "assistant", "content": assistant_content})
+                messages_payload.append({"role": "user", "content": val_report.repair_instruction})
 
         # Fast post-processing cleanup (strips internal system tags in <0.01ms)
         assistant_content = ChatService.clean_model_response(assistant_content)
@@ -384,90 +394,106 @@ class ChatService:
         # =========================================================================
         # STEP 13 & 14: Atomic State Persistence
         # =========================================================================
-        if not conversation:
-            title = resolved_task.canonical_query[:30] + ("..." if len(resolved_task.canonical_query) > 30 else "")
-            conversation = Conversation(
-                workspace_slug=request.workspace_slug,
-                title=title,
-                model_name=model_to_use or "llama3.2:3b"
-            )
-            db.add(conversation)
-            await db.commit()
-            await db.refresh(conversation)
+        with time_stage(stages_ms, "persistence"):
+            if not conversation:
+                title = resolved_task.canonical_query[:30] + ("..." if len(resolved_task.canonical_query) > 30 else "")
+                conversation = Conversation(
+                    workspace_slug=request.workspace_slug,
+                    title=title,
+                    model_name=model_to_use or "llama3.2:3b"
+                )
+                db.add(conversation)
+                await db.commit()
+                await db.refresh(conversation)
 
-        # Save User Message
-        user_metadata = {}
-        if request.attachments:
-            user_metadata["attachments"] = [a.model_dump() for a in request.attachments]
+            # Save User Message
+            user_metadata = {}
+            if request.attachments:
+                user_metadata["attachments"] = [a.model_dump() for a in request.attachments]
 
-        user_msg = Message(
-            conversation_id=conversation.id,
-            role="user",
-            content=request.message,
-            model_name=model_to_use,
-            token_count=len(request.message.split()),
-            extra_metadata=user_metadata
-        )
-        db.add(user_msg)
-        await db.commit()
-        await db.refresh(user_msg)
-
-        # Save Assistant Message
-        assistant_metadata = {
-            "rag_applied": rag_applied,
-            "web_searched": web_searched,
-            "routing_reason": routing_reason,
-            "execution_mode": execution_mode,
-            "image_url": generated_image_url,
-            "context_stats": assembled["stats"],
-            "constraints_applied": resolved_task.accumulated_constraints,
-            "turn_type": resolved_task.turn_type,
-            "canonical_prompt": resolved_task.canonical_query,
-            "resolved_topic": resolved_task.active_subject,
-            "execution_metadata": exec_meta_dict,
-            "validation_report": val_report.model_dump() if val_report else {},
-        }
-
-        assistant_msg = Message(
-            conversation_id=conversation.id,
-            role="assistant",
-            content=assistant_content,
-            model_name=exec_meta_dict.get("actual_model") or model_to_use,
-            citations=[c.model_dump() for c in citations],
-            token_count=len(assistant_content.split()),
-            extra_metadata=assistant_metadata
-        )
-        db.add(assistant_msg)
-        await db.commit()
-        await db.refresh(assistant_msg)
-
-        # Update Conversation State only on successful turn
-        try:
-            await ConversationStateService.update_state_turn(
-                db=db,
+            user_msg = Message(
                 conversation_id=conversation.id,
-                user_message=request.message,
-                turn_type=resolved_task.turn_type,
-                resolved_topic=resolved_task.active_subject or request.message[:50],
-                canonical_prompt=resolved_task.canonical_query,
-                entities=ConversationStateService.extract_entities(request.message),
-                references=resolved_task.resolved_references,
-                constraints=resolved_task.accumulated_constraints,
-                assistant_summary=assistant_content[:300]
+                role="user",
+                content=request.message,
+                model_name=model_to_use,
+                token_count=len(request.message.split()),
+                extra_metadata=user_metadata
             )
-        except Exception as state_err:
-            logger.warning(f"State update notice: {state_err}")
+            db.add(user_msg)
+            await db.commit()
+            await db.refresh(user_msg)
 
-        # Inline fact extraction
-        try:
-            await MemoryService.extract_and_store_from_text(
-                db=db,
-                text=request.message,
-                workspace_slug=request.workspace_slug,
-                conversation_id=conversation.id
+            # Save Assistant Message
+            assistant_metadata = {
+                "rag_applied": rag_applied,
+                "web_searched": web_searched,
+                "routing_reason": routing_reason,
+                "execution_mode": execution_mode,
+                "image_url": generated_image_url,
+                "context_stats": assembled["stats"],
+                "constraints_applied": resolved_task.accumulated_constraints,
+                "turn_type": resolved_task.turn_type,
+                "canonical_prompt": resolved_task.canonical_query,
+                "resolved_topic": resolved_task.active_subject,
+                "execution_metadata": exec_meta_dict,
+                "validation_report": val_report.model_dump() if val_report else {},
+            }
+
+            assistant_msg = Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=assistant_content,
+                model_name=exec_meta_dict.get("actual_model") or model_to_use,
+                citations=[c.model_dump() for c in citations],
+                token_count=len(assistant_content.split()),
+                extra_metadata=assistant_metadata
             )
-        except Exception as e:
-            logger.debug(f"Fact extraction notice: {e}")
+            db.add(assistant_msg)
+            await db.commit()
+            await db.refresh(assistant_msg)
+
+            # Update Conversation State only on successful turn
+            try:
+                await ConversationStateService.update_state_turn(
+                    db=db,
+                    conversation_id=conversation.id,
+                    user_message=request.message,
+                    turn_type=resolved_task.turn_type,
+                    resolved_topic=resolved_task.active_subject or request.message[:50],
+                    canonical_prompt=resolved_task.canonical_query,
+                    entities=ConversationStateService.extract_entities(request.message),
+                    references=resolved_task.resolved_references,
+                    constraints=resolved_task.accumulated_constraints,
+                    assistant_summary=assistant_content[:300]
+                )
+            except Exception as state_err:
+                logger.warning(f"State update notice: {state_err}")
+
+            # Inline fact extraction
+            try:
+                await MemoryService.extract_and_store_from_text(
+                    db=db,
+                    text=request.message,
+                    workspace_slug=request.workspace_slug,
+                    conversation_id=conversation.id
+                )
+            except Exception as e:
+                logger.debug(f"Fact extraction notice: {e}")
+
+        total_ms = (time.perf_counter() - t_req_start) * 1000.0
+        DiagnosticsService.record_request(
+            RequestTimingRecord(
+                request_id=request_id,
+                model=model_to_use or "unknown",
+                num_ctx=assembled.get("stats", {}).get("model_context_limit", 2048),
+                stages_ms=stages_ms,
+                prompt_tokens=exec_meta_dict.get("prompt_eval_count") or len(assembled.get("augmented_prompt", "").split()),
+                gen_tokens=exec_meta_dict.get("eval_count") or len(assistant_content.split()),
+                tok_s=exec_meta_dict.get("tok_s"),
+                load_s=exec_meta_dict.get("load_s"),
+                total_duration_ms=round(total_ms, 2)
+            )
+        )
 
         return ChatCompletionResponse(
             conversation_id=conversation.id,
@@ -486,6 +512,8 @@ class ChatService:
         request: ChatCompletionRequest,
     ) -> AsyncGenerator[str, None]:
         request_id = str(uuid.uuid4())
+        t_req_start = time.perf_counter()
+        stages_ms: Dict[str, float] = {}
 
         # 1. Load Conversation, History & State
         conversation = None
@@ -547,13 +575,14 @@ class ChatService:
             return
 
         # 2. Conversation Intelligence & Task Planning
-        q_analysis = await QueryIntelligenceService.analyze_query(
-            user_message=request.message,
-            conversation_history=recent_history,
-            workspace_slug=request.workspace_slug,
-            conversation_state=conv_state,
-            request_id=request_id
-        )
+        with time_stage(stages_ms, "query_analysis"):
+            q_analysis = await QueryIntelligenceService.analyze_query(
+                user_message=request.message,
+                conversation_history=recent_history,
+                workspace_slug=request.workspace_slug,
+                conversation_state=conv_state,
+                request_id=request_id
+            )
         resolved_task: ResolvedTask = q_analysis.resolved_task
 
         citations: List[SourceCitation] = []
@@ -564,18 +593,19 @@ class ChatService:
         model_to_use = request.model_name
 
         if not model_to_use or model_to_use == "auto":
-            route_plan = await ModelRouter.evaluate_routing(
-                db=db,
-                request=RouterEvaluationRequest(
-                    prompt=resolved_task.canonical_query,
-                    workspace_slug=request.workspace_slug,
-                    privacy_mode=resolved_task.privacy_mode
-                ),
-                resolved_task=resolved_task
-            )
-            model_to_use = route_plan.selected_model_id
-            routing_reason = route_plan.routing_reason
-            execution_mode = route_plan.execution_mode
+            with time_stage(stages_ms, "router"):
+                route_plan = await ModelRouter.evaluate_routing(
+                    db=db,
+                    request=RouterEvaluationRequest(
+                        prompt=resolved_task.canonical_query,
+                        workspace_slug=request.workspace_slug,
+                        privacy_mode=resolved_task.privacy_mode
+                    ),
+                    resolved_task=resolved_task
+                )
+                model_to_use = route_plan.selected_model_id
+                routing_reason = route_plan.routing_reason
+                execution_mode = route_plan.execution_mode
 
         # 4. Tool & Evidence Retrieval
         async def fetch_workspace():
@@ -624,12 +654,13 @@ class ChatService:
                     logger.debug(f"Web search stream error: {e}")
             return []
 
-        workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
-            fetch_workspace(),
-            fetch_memories(),
-            fetch_rag(),
-            fetch_web()
-        )
+        with time_stage(stages_ms, "retrieval"):
+            workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
+                fetch_workspace(),
+                fetch_memories(),
+                fetch_rag(),
+                fetch_web()
+            )
 
         workspace_instructions = workspace_obj.instructions if workspace_obj else "You are Aetherius AI."
         workspace_name = workspace_obj.name if workspace_obj else "General"
@@ -653,19 +684,20 @@ class ChatService:
             "last_user_goal": resolved_task.canonical_query,
         }
 
-        assembled = ContextEngine.assemble_context(
-            model_context_limit=8192,
-            max_output_tokens=request.max_tokens or 2048,
-            workspace_name=workspace_name,
-            workspace_instructions=workspace_instructions,
-            memories=retrieved_memories,
-            rag_chunks=rag_chunks,
-            web_results=web_results,
-            chat_history=recent_history,
-            current_user_message=request.message,
-            accumulated_constraints=resolved_task.accumulated_constraints,
-            conversation_state=state_payload
-        )
+        with time_stage(stages_ms, "context"):
+            assembled = ContextEngine.assemble_context(
+                model_context_limit=8192,
+                max_output_tokens=request.max_tokens or 2048,
+                workspace_name=workspace_name,
+                workspace_instructions=workspace_instructions,
+                memories=retrieved_memories,
+                rag_chunks=rag_chunks,
+                web_results=web_results,
+                chat_history=recent_history,
+                current_user_message=request.message,
+                accumulated_constraints=resolved_task.accumulated_constraints,
+                conversation_state=state_payload
+            )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
         messages_payload.extend(assembled["fitted_history"])
@@ -700,6 +732,8 @@ class ChatService:
         # Stream tokens
         full_response_text = ""
         actual_model_name = model_to_use
+        first_token_ms: Optional[float] = None
+        t_gen_start = time.perf_counter()
 
         try:
             async for token in model_manager.stream_response(
@@ -708,12 +742,17 @@ class ChatService:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens
             ):
+                if first_token_ms is None:
+                    first_token_ms = round((time.perf_counter() - t_req_start) * 1000.0, 2)
+                    stages_ms["first_token"] = first_token_ms
                 full_response_text += token
                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
         except Exception as e:
             err_msg = f"\n[Model stream notice: {str(e)}]"
             full_response_text += err_msg
             yield f"data: {json.dumps({'type': 'token', 'token': err_msg})}\n\n"
+
+        stages_ms["generation"] = round((time.perf_counter() - t_gen_start) * 1000.0, 2)
 
         # Save Assistant Message
         cleaned_response_text = ChatService.clean_model_response(full_response_text)
@@ -728,35 +767,57 @@ class ChatService:
             "resolved_topic": resolved_task.active_subject,
         }
 
-        assistant_msg = Message(
-            conversation_id=conversation.id,
-            role="assistant",
-            content=cleaned_response_text,
-            model_name=actual_model_name,
-            citations=[c.model_dump() for c in citations],
-            token_count=len(cleaned_response_text.split()),
-            extra_metadata=assistant_metadata
-        )
-        db.add(assistant_msg)
-        await db.commit()
-        await db.refresh(assistant_msg)
-
-        # Update Conversation State
-        try:
-            await ConversationStateService.update_state_turn(
-                db=db,
+        with time_stage(stages_ms, "persistence"):
+            assistant_msg = Message(
                 conversation_id=conversation.id,
-                user_message=request.message,
-                turn_type=resolved_task.turn_type,
-                resolved_topic=resolved_task.active_subject or request.message[:50],
-                canonical_prompt=resolved_task.canonical_query,
-                entities=ConversationStateService.extract_entities(request.message),
-                references=resolved_task.resolved_references,
-                constraints=resolved_task.accumulated_constraints,
-                assistant_summary=cleaned_response_text[:300]
+                role="assistant",
+                content=cleaned_response_text,
+                model_name=actual_model_name,
+                citations=[c.model_dump() for c in citations],
+                token_count=len(cleaned_response_text.split()),
+                extra_metadata=assistant_metadata
             )
-        except Exception as state_err:
-            logger.warning(f"State update notice: {state_err}")
+            db.add(assistant_msg)
+            await db.commit()
+            await db.refresh(assistant_msg)
+
+            # Update Conversation State
+            try:
+                await ConversationStateService.update_state_turn(
+                    db=db,
+                    conversation_id=conversation.id,
+                    user_message=request.message,
+                    turn_type=resolved_task.turn_type,
+                    resolved_topic=resolved_task.active_subject or request.message[:50],
+                    canonical_prompt=resolved_task.canonical_query,
+                    entities=ConversationStateService.extract_entities(request.message),
+                    references=resolved_task.resolved_references,
+                    constraints=resolved_task.accumulated_constraints,
+                    assistant_summary=cleaned_response_text[:300]
+                )
+            except Exception as state_err:
+                logger.warning(f"State update notice: {state_err}")
+
+        total_ms = (time.perf_counter() - t_req_start) * 1000.0
+        
+        # Read last metrics from ollama provider if available
+        ollama_p = model_manager.providers.get("ollama")
+        ollama_m = getattr(ollama_p, "last_metrics", {}) if ollama_p else {}
+
+        DiagnosticsService.record_request(
+            RequestTimingRecord(
+                request_id=request_id,
+                model=actual_model_name or "unknown",
+                num_ctx=assembled.get("stats", {}).get("model_context_limit", 2048),
+                stages_ms=stages_ms,
+                prompt_tokens=ollama_m.get("prompt_eval_count") or len(assembled.get("augmented_prompt", "").split()),
+                gen_tokens=ollama_m.get("eval_count") or len(cleaned_response_text.split()),
+                tok_s=ollama_m.get("tok_s"),
+                load_s=ollama_m.get("load_s"),
+                first_token_ms=first_token_ms,
+                total_duration_ms=round(total_ms, 2)
+            )
+        )
 
         # Send SSE done event
         yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': cleaned_response_text, 'conversation_id': conversation.id, 'model_used': actual_model_name, 'citations': [c.model_dump() for c in citations]})}\n\n"
