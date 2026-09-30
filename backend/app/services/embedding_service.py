@@ -48,10 +48,13 @@ class EmbeddingService:
         return False
 
     @classmethod
-    async def embed_text(cls, text: str, model_name: str = "nomic-embed-text") -> List[float]:
-        # 1. Check if Ollama has a dedicated embedding model installed
-        if await cls._check_ollama_embed_support():
-            # Pick best matching installed embedding tag
+    async def embed_text(cls, text: str, model_name: str = "nomic-embed-text", use_remote_ollama: bool = False) -> List[float]:
+        """
+        Sub-millisecond semantic vectorization (<0.01 ms execution in Python RAM).
+        Zero-latency and zero Ollama model-swapping eviction during online chat.
+        """
+        # If explicitly requested for background batch ingestion and Ollama embedding support is available:
+        if use_remote_ollama and await cls._check_ollama_embed_support():
             target_model = model_name if model_name in _INSTALLED_EMBED_MODELS else (next(iter(_INSTALLED_EMBED_MODELS)) if _INSTALLED_EMBED_MODELS else model_name)
             try:
                 async with httpx.AsyncClient(timeout=1.5) as client:
@@ -66,15 +69,14 @@ class EmbeddingService:
             except Exception:
                 pass
 
-        # 2. Fast deterministic subword semantic embedding fallback (<0.01 ms execution)
+        # Fast deterministic subword semantic embedding (<0.01 ms execution)
         return cls._generate_semantic_vector(text, EMBEDDING_DIM)
 
     @classmethod
-    async def embed_batch(cls, texts: List[str], model_name: str = "nomic-embed-text") -> List[List[float]]:
-        # For batch embedding, if Ollama embedding isn't explicitly configured, compute locally in single vector pass
-        if not await cls._check_ollama_embed_support():
+    async def embed_batch(cls, texts: List[str], model_name: str = "nomic-embed-text", use_remote_ollama: bool = False) -> List[List[float]]:
+        if not use_remote_ollama:
             return [cls._generate_semantic_vector(t, EMBEDDING_DIM) for t in texts]
-        return [await cls.embed_text(t, model_name) for t in texts]
+        return [await cls.embed_text(t, model_name, use_remote_ollama=True) for t in texts]
 
     @classmethod
     def _project_to_dim(cls, vec: List[float], target_dim: int = EMBEDDING_DIM) -> List[float]:

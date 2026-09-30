@@ -1,8 +1,10 @@
 import os
+import time
 import httpx
 import json
 import asyncio
-from typing import AsyncGenerator, Dict, Any, List, Optional
+import psutil
+from typing import AsyncGenerator, Dict, Any, List, Optional, Set
 from backend.app.services.providers.base import BaseModelProvider
 from backend.app.core.logging import logger
 
@@ -10,13 +12,17 @@ from backend.app.core.logging import logger
 class OllamaProvider(BaseModelProvider):
     """
     High-Performance Local Ollama Provider.
-    Includes memory persistence (keep_alive: 30m), multi-thread acceleration,
-    vision detection, and low-latency streaming.
+    Includes memory persistence (keep_alive: 30m), physical-core thread optimization,
+    dynamic context window scaling, installed tag caching, and idle model eviction.
     """
 
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         self.base_url = base_url
-        self._cpu_threads = max(1, (os.cpu_count() or 4) - 1)
+        # Use physical CPU cores to eliminate hyperthreading cache contention
+        self._cpu_threads = max(1, psutil.cpu_count(logical=False) or (os.cpu_count() or 4))
+        self._cached_tags: List[str] = []
+        self._last_tags_check: float = 0.0
+        self._current_active_model: Optional[str] = None
 
     async def is_available(self) -> bool:
         try:
@@ -48,17 +54,36 @@ class OllamaProvider(BaseModelProvider):
         return True
 
     async def get_installed_tags(self) -> List[str]:
-        """Return list of locally installed model tags in Ollama."""
+        """Return cached list of locally installed model tags in Ollama (30s TTL)."""
+        now = time.time()
+        if self._cached_tags and (now - self._last_tags_check) < 30.0:
+            return self._cached_tags
+
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 res = await client.get(f"{self.base_url}/api/tags")
                 if res.status_code == 200:
                     data = res.json()
                     models = data.get("models", [])
-                    return [m.get("name") for m in models if "name" in m]
+                    self._cached_tags = [m.get("name") for m in models if "name" in m]
+                    self._last_tags_check = now
+                    return self._cached_tags
         except Exception as e:
             logger.debug(f"Ollama tags check notice: {e}")
-        return []
+        return self._cached_tags or []
+
+    async def evict_idle_models(self, target_model: str) -> None:
+        """Evicts previously loaded non-target models from memory to prevent RAM saturation and CPU thrashing."""
+        if self._current_active_model and self._current_active_model != target_model:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    await client.post(
+                        f"{self.base_url}/api/generate",
+                        json={"model": self._current_active_model, "keep_alive": 0}
+                    )
+            except Exception:
+                pass
+        self._current_active_model = target_model
 
     async def pull_model(self, model_name: str) -> bool:
         """Trigger model download in Ollama."""
@@ -68,6 +93,7 @@ class OllamaProvider(BaseModelProvider):
                     f"{self.base_url}/api/pull",
                     json={"name": model_name, "stream": False}
                 )
+                self._last_tags_check = 0.0 # Invalidate cache
                 return res.status_code == 200
         except Exception as e:
             logger.error(f"Failed to pull model {model_name} via Ollama: {e}")
@@ -82,6 +108,7 @@ class OllamaProvider(BaseModelProvider):
                     f"{self.base_url}/api/delete",
                     json={"name": model_name}
                 )
+                self._last_tags_check = 0.0 # Invalidate cache
                 return res.status_code == 200
         except Exception as e:
             logger.error(f"Failed to delete model {model_name} via Ollama: {e}")
@@ -109,7 +136,7 @@ class OllamaProvider(BaseModelProvider):
         if model_name in chat_installed:
             return model_name
         
-        # 3. Normalized family / prefix match (e.g. "deepseek-r1:8b" -> "deepseek-r1:8b", "llama3.2:3b" -> "llama3.2:3b")
+        # 3. Normalized family / prefix match
         req_clean = model_name.lower().replace("-", "").replace(".", "").replace(":", "")
         for tag in chat_installed:
             tag_clean = tag.lower().replace("-", "").replace(".", "").replace(":", "")
@@ -131,6 +158,18 @@ class OllamaProvider(BaseModelProvider):
 
         return chat_installed[0]
 
+    def _compute_adaptive_context_size(self, clean_messages: List[Dict[str, Any]], target_model: str) -> int:
+        """Calculates optimal context window (num_ctx) to eliminate KV-cache pre-allocation latency on CPU."""
+        total_chars = sum(len(m.get("content", "")) for m in clean_messages)
+        est_tokens = max(32, total_chars // 4)
+        
+        # Scale context dynamically: for small conversations use 1024 / 2048, up to 4096 for long context
+        if est_tokens <= 500:
+            return 1024
+        elif est_tokens <= 1500:
+            return 2048
+        return min(4096, est_tokens + 512)
+
     async def generate_response(
         self,
         messages: List[Dict[str, Any]],
@@ -140,6 +179,7 @@ class OllamaProvider(BaseModelProvider):
     ) -> str:
         has_images = any("images" in m and m["images"] for m in messages)
         target_model = await self.resolve_target_model(model_name, has_images=has_images)
+        await self.evict_idle_models(target_model)
         
         clean_messages = []
         for m in messages:
@@ -149,8 +189,7 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        # Optimize context window size for fast CPU/GPU inference
-        num_ctx = 4096 if any(k in target_model.lower() for k in ["14b", "8b", "7b"]) else 8192
+        num_ctx = self._compute_adaptive_context_size(clean_messages, target_model)
         timeout = httpx.Timeout(240.0, connect=15.0, read=240.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -160,7 +199,7 @@ class OllamaProvider(BaseModelProvider):
                     "model": target_model,
                     "messages": clean_messages,
                     "stream": False,
-                    "keep_alive": "30m",  # Keep model hot in memory to eliminate cold start reloading latency
+                    "keep_alive": "30m",  # Keep active model hot in memory
                     "options": {
                         "temperature": temperature,
                         "num_predict": max_tokens,
@@ -183,6 +222,7 @@ class OllamaProvider(BaseModelProvider):
     ) -> AsyncGenerator[str, None]:
         has_images = any("images" in m and m["images"] for m in messages)
         target_model = await self.resolve_target_model(model_name, has_images=has_images)
+        await self.evict_idle_models(target_model)
 
         clean_messages = []
         for m in messages:
@@ -192,8 +232,7 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        # Optimize context window size for fast inference
-        num_ctx = 4096 if any(k in target_model.lower() for k in ["14b", "8b", "7b"]) else 8192
+        num_ctx = self._compute_adaptive_context_size(clean_messages, target_model)
         timeout = httpx.Timeout(300.0, connect=15.0, read=300.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -226,3 +265,4 @@ class OllamaProvider(BaseModelProvider):
                                 yield token
                         except Exception:
                             pass
+
