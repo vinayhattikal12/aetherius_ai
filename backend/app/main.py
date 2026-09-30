@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core.config import settings
+from backend.app.core.security import verify_launch_token
 from backend.app.core.database import init_db, AsyncSessionLocal
 from backend.app.core.logging import logger
 from backend.app.services.model_registry_service import ModelRegistryService
@@ -64,8 +65,8 @@ async def root():
     }
 
 
-# Include v1 API routes
-app.include_router(api_router, prefix=settings.API_V1_STR)
+# Include v1 API routes protected with launch token and origin verification
+app.include_router(api_router, prefix=settings.API_V1_STR, dependencies=[Depends(verify_launch_token)])
 
 
 if __name__ == "__main__":

@@ -39,7 +39,6 @@ async def get_generated_image(filename: str):
         media_type=media_type,
         headers={
             "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": "*",
         }
     )
 
