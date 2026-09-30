@@ -1410,6 +1410,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                     >
                                       {m.is_local ? (m.is_installed ? 'Local' : 'Pull') : 'Cloud'}
                                     </span>
+                                    {m.is_local && ((m.parameters_b && m.parameters_b <= 3.5) || /1\.5b|3b|edge/i.test(m.name || m.display_name || '')) && (
+                                      <span className="text-[9px] px-1.5 py-0.2 rounded font-mono bg-teal-500/25 text-teal-300">
+                                        ⚡ Fast (~0.3s)
+                                      </span>
+                                    )}
+                                    {m.is_local && ((m.parameters_b && m.parameters_b >= 14) || /14b|32b|70b|heavy/i.test(m.name || m.display_name || '')) && (
+                                      <span className="text-[9px] px-1.5 py-0.2 rounded font-mono bg-amber-500/25 text-amber-300">
+                                        🐢 Heavy on CPU
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="text-[10px] text-[#949494] truncate mt-0.5">
                                     {m.description || m.category || 'General language model'}

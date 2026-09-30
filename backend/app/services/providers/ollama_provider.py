@@ -73,16 +73,25 @@ class OllamaProvider(BaseModelProvider):
         return self._cached_tags or []
 
     async def evict_idle_models(self, target_model: str) -> None:
-        """Evicts previously loaded non-target models from memory to prevent RAM saturation and CPU thrashing."""
-        if self._current_active_model and self._current_active_model != target_model:
-            try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    await client.post(
-                        f"{self.base_url}/api/generate",
-                        json={"model": self._current_active_model, "keep_alive": 0}
-                    )
-            except Exception:
-                pass
+        """Evicts any currently loaded non-target models from memory via /api/ps to maximize available RAM & bandwidth."""
+        try:
+            async with httpx.AsyncClient(timeout=1.5) as client:
+                ps_res = await client.get(f"{self.base_url}/api/ps")
+                if ps_res.status_code == 200:
+                    loaded_models = ps_res.json().get("models", [])
+                    for lm in loaded_models:
+                        m_name = lm.get("name", "")
+                        # If this loaded model is not the target model, evict it immediately
+                        if m_name and m_name != target_model and not target_model.startswith(m_name.split(":")[0]):
+                            try:
+                                await client.post(
+                                    f"{self.base_url}/api/generate",
+                                    json={"model": m_name, "keep_alive": 0}
+                                )
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.debug(f"Ollama ps eviction notice: {e}")
         self._current_active_model = target_model
 
     async def pull_model(self, model_name: str) -> bool:
