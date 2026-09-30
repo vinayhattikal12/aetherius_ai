@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     # Sandboxing & Execution Security
     ENABLE_PYTHON_SANDBOX: bool = Field(default=False)
+    LOCAL_ONLY: bool = Field(default=False)
 
     model_config = SettingsConfigDict(
         env_file=".env",
