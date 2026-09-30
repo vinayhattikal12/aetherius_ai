@@ -119,47 +119,80 @@ class MemoryService:
         top_k: int = 6,
         min_similarity: float = 0.05
     ) -> List[Tuple[Memory, float]]:
-        """Retrieves semantically similar memories from PostgreSQL using pgvector cosine similarity."""
-        query_vector = await EmbeddingService.embed_text(query)
-
-        # Distance expression: 1 - cosine_similarity
-        distance = Memory.embedding_vector.cosine_distance(query_vector)
-        # Similarity: 1 - distance
-        similarity = 1.0 - distance
-
-        stmt = select(Memory, similarity.label('sim'))
-        
-        if workspace_slug:
-            if workspace_slug == "general":
-                stmt = stmt.where(Memory.workspace_slug == "general")
-            else:
-                stmt = stmt.where(Memory.workspace_slug.in_([workspace_slug, "general"]))
-
-        # Database-level filtering and ranking! 
-        stmt = stmt.where(similarity >= min_similarity).order_by(distance).limit(50)
-
-        result = await db.execute(stmt)
-        rows = result.all()
+        """Retrieves semantically similar memories from PostgreSQL using pgvector with resilient fallback."""
+        try:
+            query_vector = await EmbeddingService.embed_text(query)
+        except Exception:
+            return []
 
         scored_memories: List[Tuple[Memory, float]] = []
         now = utc_now()
+        use_fallback = False
 
-        for mem, sim in rows:
-            # Boost similarity by importance weight (1.0 - 5.0) and high-priority preferences
-            boost = 1.0 + (mem.importance_weight - 1.0) * 0.15
-            if mem.memory_type in ("preference", "instruction"):
-                boost += 0.1
-            weighted_score = float(sim) * boost
-            
-            mem.access_count += 1
-            mem.last_accessed_at = now
-            scored_memories.append((mem, round(weighted_score, 4)))
+        # Try native pgvector query inside an isolated savepoint
+        try:
+            async with db.begin_nested():
+                distance = Memory.embedding_vector.cosine_distance(query_vector)
+                similarity = 1.0 - distance
+                stmt = select(Memory, similarity.label('sim'))
+                
+                if workspace_slug:
+                    if workspace_slug == "general":
+                        stmt = stmt.where(Memory.workspace_slug == "general")
+                    else:
+                        stmt = stmt.where(Memory.workspace_slug.in_([workspace_slug, "general"]))
 
-        await db.commit()
+                stmt = stmt.where(similarity >= min_similarity).order_by(distance).limit(50)
+                result = await db.execute(stmt)
+                rows = result.all()
 
-        # Sort by weighted score descending
-        scored_memories.sort(key=lambda x: x[1], reverse=True)
-        return scored_memories[:top_k]
+                for mem, sim in rows:
+                    boost = 1.0 + (mem.importance_weight - 1.0) * 0.15
+                    if mem.memory_type in ("preference", "instruction"):
+                        boost += 0.1
+                    weighted_score = float(sim) * boost
+                    mem.access_count += 1
+                    mem.last_accessed_at = now
+                    scored_memories.append((mem, round(weighted_score, 4)))
+
+                scored_memories.sort(key=lambda x: x[1], reverse=True)
+                return scored_memories[:top_k]
+        except Exception as e:
+            logger.debug(f"pgvector query skipped (fallback mode): {e}")
+            use_fallback = True
+
+        if use_fallback:
+            try:
+                async with db.begin_nested():
+                    stmt = select(Memory).order_by(Memory.importance_weight.desc(), Memory.last_accessed_at.desc()).limit(50)
+                    if workspace_slug:
+                        if workspace_slug == "general":
+                            stmt = stmt.where(Memory.workspace_slug == "general")
+                        else:
+                            stmt = stmt.where(Memory.workspace_slug.in_([workspace_slug, "general"]))
+
+                    result = await db.execute(stmt)
+                    memories = result.scalars().all()
+
+                    for m in memories:
+                        if m.embedding_vector:
+                            sim = EmbeddingService.cosine_similarity(query_vector, m.embedding_vector)
+                            boost = 1.0 + (m.importance_weight - 1.0) * 0.15
+                            if m.memory_type in ("preference", "instruction"):
+                                boost += 0.1
+                            weighted_score = sim * boost
+                            if sim >= min_similarity:
+                                m.access_count += 1
+                                m.last_accessed_at = now
+                                scored_memories.append((m, round(weighted_score, 4)))
+
+                    scored_memories.sort(key=lambda x: x[1], reverse=True)
+                    return scored_memories[:top_k]
+            except Exception as fb_err:
+                logger.debug(f"Memory fallback retrieval notice: {fb_err}")
+                return []
+
+        return []
 
     @classmethod
     async def handle_explicit_memory_commands(
