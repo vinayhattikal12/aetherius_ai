@@ -43,6 +43,15 @@ class ModelRouter:
         ]
         return any(re.search(pat, p) for pat in patterns)
 
+    _cache_data: Optional[Dict[str, Any]] = None
+    _cache_ts: float = 0.0
+    CACHE_TTL: float = 60.0
+
+    @classmethod
+    def invalidate_cache(cls) -> None:
+        cls._cache_data = None
+        cls._cache_ts = 0.0
+
     @classmethod
     async def evaluate_routing(
         cls,
@@ -53,19 +62,33 @@ class ModelRouter:
         """
         Routes query to the most capable, available model based on the Authoritative ResolvedTask.
         """
-        # 1. Fetch User Settings & System Hardware Profile
-        settings_res = await db.execute(select(UserSettings))
-        user_settings = settings_res.scalars().first()
+        import time
+        now = time.time()
+        if cls._cache_data and (now - cls._cache_ts) < cls.CACHE_TTL:
+            user_settings = cls._cache_data.get("user_settings")
+            sys_profile = cls._cache_data.get("sys_profile")
+            models = cls._cache_data.get("models", [])
+        else:
+            # 1. Fetch User Settings & System Hardware Profile
+            settings_res = await db.execute(select(UserSettings))
+            user_settings = settings_res.scalars().first()
+
+            sys_res = await db.execute(select(SystemProfile).order_by(SystemProfile.created_at.desc()))
+            sys_profile = sys_res.scalars().first()
+
+            # 2. Fetch all registered models
+            models_res = await db.execute(select(ModelRegistry))
+            models = models_res.scalars().all()
+
+            cls._cache_data = {
+                "user_settings": user_settings,
+                "sys_profile": sys_profile,
+                "models": models
+            }
+            cls._cache_ts = now
+
         privacy_mode = request.privacy_mode or (user_settings.privacy_mode if user_settings else "HYBRID")
-
-        sys_res = await db.execute(select(SystemProfile).order_by(SystemProfile.created_at.desc()))
-        sys_profile = sys_res.scalars().first()
         compute_tier = sys_profile.compute_tier if sys_profile else "Medium"
-
-        # 2. Fetch all registered models
-        models_res = await db.execute(select(ModelRegistry))
-        models = models_res.scalars().all()
-
         slug = (request.workspace_slug or "general").lower()
 
         # 3. Use authoritative ResolvedTask or analyze if not provided

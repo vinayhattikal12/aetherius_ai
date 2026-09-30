@@ -122,8 +122,8 @@ class MemoryService:
         """Retrieves semantically similar memories from PostgreSQL using cosine similarity."""
         query_vector = await EmbeddingService.embed_text(query)
 
-        # Include both global and workspace-scoped memories
-        stmt = select(Memory)
+        # Include both global and workspace-scoped memories with a strict scan cap of 50 most relevant rows
+        stmt = select(Memory).order_by(Memory.importance_weight.desc(), Memory.last_accessed_at.desc()).limit(50)
         if workspace_slug:
             if workspace_slug == "general":
                 stmt = stmt.where(Memory.workspace_slug == "general")

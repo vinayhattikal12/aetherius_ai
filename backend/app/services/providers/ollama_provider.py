@@ -127,7 +127,14 @@ class OllamaProvider(BaseModelProvider):
         return self._cached_tags or []
 
     async def evict_idle_models(self, target_model: str) -> None:
-        """Evicts any currently loaded non-target models from memory via /api/ps to maximize available RAM & bandwidth."""
+        """Evicts non-target models from memory only when free memory is below safety threshold (<2.0 GB)."""
+        free_ram_gb = (psutil.virtual_memory().available / (1024 ** 3))
+        # If sufficient memory exists, rely on Ollama's native keep_alive and max resident models to avoid thrashing
+        if free_ram_gb >= 2.0:
+            self._current_active_model = target_model
+            return
+
+        logger.info(f"[ollama] Memory pressure detected ({free_ram_gb:.1f} GB free). Evicting idle models...")
         try:
             async with httpx.AsyncClient(timeout=1.5) as client:
                 ps_res = await client.get(f"{self.base_url}/api/ps")
@@ -135,7 +142,6 @@ class OllamaProvider(BaseModelProvider):
                     loaded_models = ps_res.json().get("models", [])
                     for lm in loaded_models:
                         m_name = lm.get("name", "")
-                        # If this loaded model is not the target model, evict it immediately
                         if m_name and m_name != target_model and not target_model.startswith(m_name.split(":")[0]):
                             try:
                                 await client.post(
@@ -147,6 +153,17 @@ class OllamaProvider(BaseModelProvider):
         except Exception as e:
             logger.debug(f"Ollama ps eviction notice: {e}")
         self._current_active_model = target_model
+
+    async def warm_up_model(self, model_name: str) -> None:
+        """Sends a zero-token warmup ping with keep_alive: 30m so initial user prompt doesn't pay cold-start latency."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={"model": model_name, "prompt": "", "keep_alive": "30m"}
+                )
+        except Exception as e:
+            logger.debug(f"Ollama warmup notice for {model_name}: {e}")
 
     async def pull_model(self, model_name: str) -> bool:
         """Trigger model download in Ollama."""
