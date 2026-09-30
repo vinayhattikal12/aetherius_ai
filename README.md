@@ -16,7 +16,7 @@ Aetherius AI is a next-generation AI Operating Environment combining adaptive lo
                                          │
                                          ▼
                                 AETHERIUS CORE ENGINE
-                                (FastAPI / Python 3.14)
+                               (FastAPI / Python 3.11+)
                                          │
                       ┌──────────────────┴──────────────────┐
                       ▼                                     ▼

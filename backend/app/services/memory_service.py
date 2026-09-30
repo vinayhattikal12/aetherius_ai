@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, update
 from backend.app.models.base import utc_now
 from backend.app.models.memory import Memory
-from backend.app.schemas.memory import MemoryCreate, MemoryResponse
+from backend.app.schemas.memory import MemoryCreate, MemoryUpdate, MemoryResponse
 from backend.app.services.embedding_service import EmbeddingService
 from backend.app.core.logging import logger
 

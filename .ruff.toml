@@ -1,0 +1,20 @@
+# Ruff configuration for Aetherius AI
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (F821 undefined names, etc.)
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501", # line too long (handled by formatter)
+    "B008", # do not perform function calls in argument defaults (FastAPI Depends)
+]
+
+[lint.isort]
+known-first-party = ["backend"]
