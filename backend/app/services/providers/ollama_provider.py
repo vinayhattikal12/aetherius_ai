@@ -1,3 +1,4 @@
+import os
 import httpx
 import json
 import asyncio
@@ -7,14 +8,19 @@ from backend.app.core.logging import logger
 
 
 class OllamaProvider(BaseModelProvider):
-    """Local Ollama model provider with dynamic tags detection, capability inspection, and pull operations."""
+    """
+    High-Performance Local Ollama Provider.
+    Includes memory persistence (keep_alive: 30m), multi-thread acceleration,
+    vision detection, and low-latency streaming.
+    """
 
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         self.base_url = base_url
+        self._cpu_threads = max(1, (os.cpu_count() or 4) - 1)
 
     async def is_available(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=1.0) as client:
                 res = await client.get(f"{self.base_url}/api/tags")
                 return res.status_code == 200
         except Exception:
@@ -44,7 +50,7 @@ class OllamaProvider(BaseModelProvider):
     async def get_installed_tags(self) -> List[str]:
         """Return list of locally installed model tags in Ollama."""
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
+            async with httpx.AsyncClient(timeout=2.0) as client:
                 res = await client.get(f"{self.base_url}/api/tags")
                 if res.status_code == 200:
                     data = res.json()
@@ -143,9 +149,9 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        # Optimize context window size for fast CPU inference and avoid memory exhaustion
+        # Optimize context window size for fast CPU/GPU inference
         num_ctx = 4096 if any(k in target_model.lower() for k in ["14b", "8b", "7b"]) else 8192
-        timeout = httpx.Timeout(240.0, connect=20.0, read=240.0, write=30.0)
+        timeout = httpx.Timeout(240.0, connect=15.0, read=240.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             res = await client.post(
@@ -154,11 +160,12 @@ class OllamaProvider(BaseModelProvider):
                     "model": target_model,
                     "messages": clean_messages,
                     "stream": False,
-                    "keep_alive": "5m",
+                    "keep_alive": "30m",  # Keep model hot in memory to eliminate cold start reloading latency
                     "options": {
                         "temperature": temperature,
                         "num_predict": max_tokens,
                         "num_ctx": num_ctx,
+                        "num_thread": self._cpu_threads,
                     }
                 }
             )
@@ -185,9 +192,9 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        # Optimize context window size for fast CPU inference and avoid memory exhaustion
+        # Optimize context window size for fast inference
         num_ctx = 4096 if any(k in target_model.lower() for k in ["14b", "8b", "7b"]) else 8192
-        timeout = httpx.Timeout(300.0, connect=20.0, read=300.0, write=30.0)
+        timeout = httpx.Timeout(300.0, connect=15.0, read=300.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
@@ -197,11 +204,12 @@ class OllamaProvider(BaseModelProvider):
                     "model": target_model,
                     "messages": clean_messages,
                     "stream": True,
-                    "keep_alive": "5m",
+                    "keep_alive": "30m",  # Keep model hot in memory for instant next token response
                     "options": {
                         "temperature": temperature,
                         "num_predict": max_tokens,
                         "num_ctx": num_ctx,
+                        "num_thread": self._cpu_threads,
                     }
                 }
             ) as response:

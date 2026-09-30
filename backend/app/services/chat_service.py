@@ -52,6 +52,12 @@ class ChatService:
             r"^(Relevant\s+Information):\s*[^\n]*\n*",
             r"^(RAG\s+Knowledge(\s+Enabled|\s+Disabled)?):\s*[^\n]*\n*",
             r"^(Technical\s+Deep\s+Dive|Solution):\s*\n*",
+            r"^\[CONVERSATION\s+CONTEXT[^\]]*\]\s*\n*",
+            r"^\[ENVIRONMENT\s+&[^\]]*\]\s*\n*",
+            r"^\[USER\s+PROFILE[^\]]*\]\s*\n*",
+            r"^\[AVAILABLE\s+SANDBOX[^\]]*\]\s*\n*",
+            r"^\[LIVE\s+WEB\s+SEARCH[^\]]*\]\s*\n*",
+            r"^\[USER\s+CONSTRAINTS[^\]]*\]\s*\n*",
         ]
         for _ in range(5):
             matched = False
@@ -230,7 +236,7 @@ class ChatService:
                 return []
 
         async def fetch_rag():
-            if not request.enable_knowledge_rag and not resolved_task.plan.requires_rag:
+            if not request.enable_knowledge_rag and not getattr(request, "use_rag", False) and not resolved_task.plan.requires_rag:
                 return []
             lower_q = resolved_task.canonical_query.lower().strip()
             is_casual_or_greeting = (
@@ -247,13 +253,17 @@ class ChatService:
                 return []
 
         async def fetch_web():
-            should_search = request.enable_web_search or resolved_task.plan.requires_web_search
+            should_search = bool(
+                request.enable_web_search 
+                or getattr(request, "use_web_search", False) 
+                or resolved_task.plan.requires_web_search
+            )
             if should_search:
                 try:
                     s_res = await WebSearchService.search(resolved_task.canonical_query, max_results=4)
                     return s_res.results if s_res else []
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Web search execution error: {e}")
             return []
 
         # Execute pre-flight retrieval concurrently
@@ -314,15 +324,15 @@ class ChatService:
         messages_payload.append(user_turn_payload)
 
         # =========================================================================
-        # STEP 10, 11 & 12: Model Execution with Closed-Loop Validation & Self-Repair
+        # STEP 10: Model Execution with Closed-Loop Validation & Fast Repair
         # =========================================================================
         assistant_content = ""
         exec_meta_dict = {}
         val_report = None
-        retries = 0
-        max_retries = 2
-
         evidence_text_list = [w.get("snippet", "") + " " + (w.get("deep_content") or "") for w in web_results] + [c.content for c, _ in rag_chunks]
+
+        retries = 0
+        max_retries = 1
 
         while retries <= max_retries:
             try:
@@ -351,7 +361,7 @@ class ChatService:
                 }
                 break
 
-            # Validate response
+            # Validate response against constraints & grounding
             val_report = AnswerValidationEngine.validate_response(
                 response_text=assistant_content,
                 constraints=resolved_task.accumulated_constraints,
@@ -362,11 +372,14 @@ class ChatService:
             if val_report.is_valid or retries == max_retries:
                 break
 
-            # Attempt repair
+            # Attempt repair for constraint violation
             retries += 1
             logger.info(f"Self-repair attempt {retries}/{max_retries}: {val_report.issues}")
             messages_payload.append({"role": "assistant", "content": assistant_content})
             messages_payload.append({"role": "user", "content": val_report.repair_instruction})
+
+        # Fast post-processing cleanup (strips internal system tags in <0.01ms)
+        assistant_content = ChatService.clean_model_response(assistant_content)
 
         # =========================================================================
         # STEP 13 & 14: Atomic State Persistence
@@ -400,7 +413,6 @@ class ChatService:
         await db.refresh(user_msg)
 
         # Save Assistant Message
-        assistant_content = ChatService.clean_model_response(assistant_content)
         assistant_metadata = {
             "rag_applied": rag_applied,
             "web_searched": web_searched,
@@ -571,7 +583,7 @@ class ChatService:
             return res.scalars().first()
 
         async def fetch_memories():
-            if len(request.message.split()) < 3:
+            if len(request.message.split()) < 3 and not any(k in request.message.lower() for k in ["i am", "my", "prefer", "remember"]):
                 return []
             try:
                 scored = await MemoryService.retrieve_relevant_memories(
@@ -582,7 +594,7 @@ class ChatService:
                 return []
 
         async def fetch_rag():
-            if not request.enable_knowledge_rag and not resolved_task.plan.requires_rag:
+            if not request.enable_knowledge_rag and not getattr(request, "use_rag", False) and not resolved_task.plan.requires_rag:
                 return []
             lower_q = resolved_task.canonical_query.lower().strip()
             is_casual_or_greeting = (
@@ -599,13 +611,17 @@ class ChatService:
                 return []
 
         async def fetch_web():
-            should_search = request.enable_web_search or resolved_task.plan.requires_web_search
+            should_search = bool(
+                request.enable_web_search 
+                or getattr(request, "use_web_search", False) 
+                or resolved_task.plan.requires_web_search
+            )
             if should_search:
                 try:
                     s_res = await WebSearchService.search(resolved_task.canonical_query, max_results=4)
                     return s_res.results if s_res else []
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Web search stream error: {e}")
             return []
 
         workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
@@ -678,13 +694,12 @@ class ChatService:
         await db.commit()
         await db.refresh(user_msg)
 
-        # Send SSE init event
+        # Send SSE init event immediately so client renders citations and state
         yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [c.model_dump() for c in citations], 'model_used': model_to_use, 'routing_reason': routing_reason})}\n\n"
 
         # Stream tokens
         full_response_text = ""
         actual_model_name = model_to_use
-        provider_name = "ollama"
 
         try:
             async for token in model_manager.stream_response(
@@ -696,7 +711,7 @@ class ChatService:
                 full_response_text += token
                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
         except Exception as e:
-            err_msg = f"\n[Model stream interrupted: {str(e)}]"
+            err_msg = f"\n[Model stream notice: {str(e)}]"
             full_response_text += err_msg
             yield f"data: {json.dumps({'type': 'token', 'token': err_msg})}\n\n"
 

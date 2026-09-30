@@ -204,12 +204,14 @@ class ConversationStateService:
                 formatted_org = "ERBrains" if org.startswith("erbrains") else " ".join(w.capitalize() for w in org.split())
                 entities[formatted_org] = {"type": "organization", "mentions": 1}
 
-        # Match phrases like "XYZ company", "ABC Technologies", "DEF Solutions", "GHI Corp", "JKL Inc", "MNO Ltd"
-        org_pattern = r"\b([A-Z][a-zA-Z0-9_\-]+(?:\s+[A-Z][a-zA-Z0-9_\-]+)*)\s+(company|technologies|solutions|technologies pvt ltd|solutions pvt ltd|inc|corp|corporation|ltd|pvt ltd|llc|labs|enterprises|firm|consulting)\b"
-        for match in re.finditer(org_pattern, text, re.IGNORECASE):
+        # Match capitalized phrases like "Acme Company", "Tata Technologies", "Infosys Solutions", "Stripe Inc", "OpenAI LLC"
+        org_pattern = r"\b([A-Z][a-zA-Z0-9_\-]+(?:\s+[A-Z][a-zA-Z0-9_\-]+)*)\s+(Company|Technologies|Solutions|Technologies Pvt Ltd|Solutions Pvt Ltd|Inc\.?|Corp\.?|Corporation|Ltd\.?|Pvt Ltd|LLC|Labs|Enterprises|Firm|Consulting|Group)\b"
+        org_stopwords = {"want", "build", "create", "start", "run", "make", "an", "a", "the", "our", "my", "your", "good", "new", "top", "best", "small", "big", "ai", "tech", "software", "product", "service"}
+        for match in re.finditer(org_pattern, text):
             org_name = match.group(1).strip()
-            if len(org_name) > 1 and org_name.lower() not in ["the", "a", "an", "this", "that"]:
-                entities[org_name] = {"type": "organization", "mentions": 1}
+            org_words = [w.lower() for w in org_name.split()]
+            if len(org_name) > 1 and not all(w in org_stopwords for w in org_words) and org_name.lower() not in ["the", "a", "an", "this", "that"]:
+                entities[f"{org_name} {match.group(2)}"] = {"type": "organization", "mentions": 1}
 
         # 5. People names detection (e.g. after 'who is', 'CEO of', 'founder of', 'architect', 'lead')
         person_patterns = [

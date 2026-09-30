@@ -14,7 +14,7 @@ from backend.app.core.logging import logger
 
 class SourceEvidenceEngine:
     """
-     frontier-grade source credibility, domain authority, freshness scoring,
+    Frontier-grade source credibility, domain authority, freshness scoring,
     and evidence ranking engine.
     """
 
@@ -144,7 +144,17 @@ class SourceEvidenceEngine:
 
         # Rank descending by composite score
         scored_list.sort(key=lambda x: x[1], reverse=True)
-        return scored_list
+
+        # Filter out irrelevant dictionary noise unless the user specifically asked for word definitions
+        is_dict_query = any(k in query.lower() for k in ["define", "definition", "meaning of", "dictionary"])
+        filtered_list = []
+        for item, comp in scored_list:
+            if not is_dict_query and any(d in item.url.lower() for d in ["wiktionary.org", "merriam-webster.com", "oxfordlearnersdictionaries.com", "dictionary.cambridge.org", "dictionary.com"]):
+                continue
+            if comp >= 0.20:
+                filtered_list.append((item, comp))
+
+        return filtered_list if filtered_list else scored_list
 
     @classmethod
     async def deep_scrape_url(cls, url: str, timeout: float = 3.5) -> Optional[str]:
@@ -165,7 +175,6 @@ class SourceEvidenceEngine:
                     return None
 
                 if BeautifulSoup is None:
-                    # Clean regex fallback
                     text_only = re.sub(r"<(script|style).*?>.*?</\1>", "", resp.text, flags=re.DOTALL | re.IGNORECASE)
                     text_only = re.sub(r"<[^>]+>", " ", text_only)
                     cleaned_text = re.sub(r"\s+", " ", text_only).strip()
@@ -199,7 +208,7 @@ class SourceEvidenceEngine:
                 cleaned_text = re.sub(r"\s+", " ", combined_text).strip()
 
                 if len(cleaned_text) > 80:
-                    return cleaned_text[:2000] # Return up to 2000 chars of dense factual data
+                    return cleaned_text[:2000]
                 return None
         except Exception as e:
             logger.debug(f"Deep scraping notice for {url}: {e}")

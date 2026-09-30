@@ -199,9 +199,9 @@ class ContextEngine:
             augmented_user_parts.append(web_text)
             augmented_user_parts.append(
                 "STRICT GROUNDING DIRECTIVE:\n"
-                "1. Answer using the live web search data and full article excerpts provided above.\n"
-                "2. When stating facts or conclusions, add inline footnotes corresponding to the source index, e.g. [1], [2].\n"
-                "3. Conclude with a clean '### Sources & Evidence' section listing the source titles and markdown hyperlinks."
+                "1. Answer naturally using the live web search data and verified excerpts provided above.\n"
+                "2. When stating facts or conclusions from the search data, you may reference source indices like [1], [2].\n"
+                "3. Deliver a clean, direct, conversational answer without repeating raw URL link dumps or boilerplate."
             )
 
         augmented_user_parts.append(f"User Request:\n{current_user_message}")
