@@ -47,6 +47,18 @@ class ModelManager:
     def __init__(self):
         self.ollama = OllamaProvider()
         self.cloud = CloudProvider()
+        self._ollama_healthy: Optional[bool] = None
+        self._ollama_health_checked_at: float = 0.0
+        self._HEALTH_TTL: float = 5.0  # Re-check Ollama health at most every 5 seconds
+
+    async def _is_ollama_healthy(self) -> bool:
+        """Cached health check — avoids an HTTP ping on every single request."""
+        now = time.time()
+        if self._ollama_healthy is not None and (now - self._ollama_health_checked_at) < self._HEALTH_TTL:
+            return self._ollama_healthy
+        self._ollama_healthy = await self.ollama.health_check()
+        self._ollama_health_checked_at = now
+        return self._ollama_healthy
 
     async def get_provider_and_metadata(
         self,
@@ -54,7 +66,7 @@ class ModelManager:
         requested_mode: str = "manual"
     ) -> Tuple[BaseModelProvider, ModelExecutionMetadata]:
         is_cloud_explicit = any(k in model_name.lower() for k in ["claude", "sonnet", "haiku", "opus", "gpt", "openai", "anthropic", "groq", "gemini", "google", "cloud"])
-        ollama_healthy = await self.ollama.health_check()
+        ollama_healthy = await self._is_ollama_healthy()
 
         # 1. Explicit Cloud Request
         if is_cloud_explicit:

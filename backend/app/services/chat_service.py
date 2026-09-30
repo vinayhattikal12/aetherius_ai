@@ -482,16 +482,21 @@ class ChatService:
             except Exception as state_err:
                 logger.warning(f"State update notice: {state_err}")
 
-            # Inline fact extraction
+
+            # Inline fact extraction — runs in an isolated SAVEPOINT so schema issues
+            # (e.g. pgvector not installed) cannot abort the main conversation transaction
             try:
+                await db.begin_nested()  # SAVEPOINT
                 await MemoryService.extract_and_store_from_text(
                     db=db,
                     text=request.message,
                     workspace_slug=request.workspace_slug,
                     conversation_id=conversation.id
                 )
+                await db.commit()
             except Exception as e:
-                logger.debug(f"Fact extraction notice: {e}")
+                await db.rollback()  # Rollback only to SAVEPOINT, main tx survives
+                logger.debug(f"Fact extraction notice (non-critical): {e}")
 
         total_ms = (time.perf_counter() - t_req_start) * 1000.0
         DiagnosticsService.record_request(

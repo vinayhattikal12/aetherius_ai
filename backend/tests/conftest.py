@@ -44,8 +44,15 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest_asyncio.fixture(scope="function", autouse=False)
 async def setup_test_db():
     """Ensure schema is initialized and default data is seeded for integration tests."""
+    from sqlalchemy import text
     try:
         async with test_engine.begin() as conn:
+            # Ensure pgvector extension is loaded, then recreate all tables fresh
+            try:
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+            except Exception:
+                pass  # OK if not available - schema will skip vector columns
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         
         async with TestAsyncSessionLocal() as session:

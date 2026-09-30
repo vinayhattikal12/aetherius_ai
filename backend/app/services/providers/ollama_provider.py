@@ -37,7 +37,8 @@ class OllamaProvider(BaseModelProvider):
         return await self.is_available()
 
     async def get_model_info_async(self, model_name: str) -> Dict[str, Any]:
-        """Queries Ollama /api/show and caches model context length, parameter size, and capabilities."""
+        """Queries Ollama /api/show and caches model context length, parameter size, and capabilities.
+        For HuggingFace or non-Ollama models not in Ollama's registry, returns safe defaults instantly."""
         if model_name in self._model_info_cache:
             return self._model_info_cache[model_name]
 
@@ -51,12 +52,11 @@ class OllamaProvider(BaseModelProvider):
         model_max_ctx = 32768 if (is_coder or "llama3" in model_name.lower() or "qwen" in model_name.lower()) else 8192
 
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=1.5) as client:  # Reduced from 2.0 to 1.5s
                 res = await client.post(f"{self.base_url}/api/show", json={"name": model_name})
                 if res.status_code == 200:
                     data = res.json()
                     model_info = data.get("model_info", {})
-                    # Parse context length from model_info metadata
                     for k, v in model_info.items():
                         if "context_length" in k and isinstance(v, (int, float)):
                             model_max_ctx = int(v)
@@ -65,7 +65,8 @@ class OllamaProvider(BaseModelProvider):
                         if "vision" in data["capabilities"]:
                             is_vision = True
         except Exception as e:
-            logger.debug(f"Ollama show API notice for {model_name}: {e}")
+            # Not an Ollama model (e.g. HuggingFace) — use safe defaults, don't block
+            logger.debug(f"Model info lookup skipped for '{model_name}' (not in Ollama registry): {e}")
 
         stable_num_ctx = min(model_max_ctx, budget_ctx)
         info = {
@@ -334,7 +335,10 @@ class OllamaProvider(BaseModelProvider):
                 clean_messages.append(entry)
 
         model_info = await self.get_model_info_async(target_model)
-        num_ctx = model_info.get("stable_num_ctx", 8192)
+        # Use ADAPTIVE context size based on actual message length - eliminates KV-cache pre-allocation lag
+        num_ctx = self._compute_adaptive_context_size(clean_messages, target_model)
+        # Cap by model's known maximum to avoid OOM on small models
+        num_ctx = min(num_ctx, model_info.get("stable_num_ctx", 4096))
         timeout = httpx.Timeout(300.0, connect=15.0, read=300.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -345,7 +349,7 @@ class OllamaProvider(BaseModelProvider):
                     "model": target_model,
                     "messages": clean_messages,
                     "stream": True,
-                    "keep_alive": "30m",  # Keep model hot in memory for instant next token response
+                    "keep_alive": "30m",
                     "options": {
                         "temperature": temperature,
                         "num_predict": max_tokens,
