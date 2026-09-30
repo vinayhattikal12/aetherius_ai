@@ -311,8 +311,10 @@ class ChatService:
         }
 
         with time_stage(stages_ms, "context"):
+            target_model_info = await model_manager.ollama.get_model_info_async(model_to_use)
+            resolved_context_limit = target_model_info.get("stable_num_ctx", 8192)
             assembled = ContextEngine.assemble_context(
-                model_context_limit=8192,
+                model_context_limit=resolved_context_limit,
                 max_output_tokens=request.max_tokens or 2048,
                 workspace_name=workspace_name,
                 workspace_instructions=workspace_instructions,
@@ -685,8 +687,10 @@ class ChatService:
         }
 
         with time_stage(stages_ms, "context"):
+            target_model_info = await model_manager.ollama.get_model_info_async(model_to_use)
+            resolved_context_limit = target_model_info.get("stable_num_ctx", 8192)
             assembled = ContextEngine.assemble_context(
-                model_context_limit=8192,
+                model_context_limit=resolved_context_limit,
                 max_output_tokens=request.max_tokens or 2048,
                 workspace_name=workspace_name,
                 workspace_instructions=workspace_instructions,
@@ -801,7 +805,7 @@ class ChatService:
         total_ms = (time.perf_counter() - t_req_start) * 1000.0
         
         # Read last metrics from ollama provider if available
-        ollama_p = model_manager.providers.get("ollama")
+        ollama_p = getattr(model_manager, "ollama", None)
         ollama_m = getattr(ollama_p, "last_metrics", {}) if ollama_p else {}
 
         DiagnosticsService.record_request(

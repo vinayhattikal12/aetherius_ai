@@ -23,6 +23,7 @@ class OllamaProvider(BaseModelProvider):
         self._cached_tags: List[str] = []
         self._last_tags_check: float = 0.0
         self._current_active_model: Optional[str] = None
+        self._model_info_cache: Dict[str, Dict[str, Any]] = {}
 
     async def is_available(self) -> bool:
         try:
@@ -35,17 +36,70 @@ class OllamaProvider(BaseModelProvider):
     async def health_check(self) -> bool:
         return await self.is_available()
 
-    def get_model_info(self, model_name: str) -> Dict[str, Any]:
+    async def get_model_info_async(self, model_name: str) -> Dict[str, Any]:
+        """Queries Ollama /api/show and caches model context length, parameter size, and capabilities."""
+        if model_name in self._model_info_cache:
+            return self._model_info_cache[model_name]
+
         is_coder = "coder" in model_name.lower() or "code" in model_name.lower()
         is_reasoner = "r1" in model_name.lower() or "reason" in model_name.lower()
         is_vision = "vision" in model_name.lower() or "vl" in model_name.lower() or "llava" in model_name.lower()
+        
+        # Determine hardware-aware context budget (8192 on >=12GB RAM, 4096 on lower RAM)
+        total_ram_gb = (psutil.virtual_memory().total / (1024 ** 3))
+        budget_ctx = 4096 if total_ram_gb < 12.0 else 8192
+        model_max_ctx = 32768 if (is_coder or "llama3" in model_name.lower() or "qwen" in model_name.lower()) else 8192
+
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                res = await client.post(f"{self.base_url}/api/show", json={"name": model_name})
+                if res.status_code == 200:
+                    data = res.json()
+                    model_info = data.get("model_info", {})
+                    # Parse context length from model_info metadata
+                    for k, v in model_info.items():
+                        if "context_length" in k and isinstance(v, (int, float)):
+                            model_max_ctx = int(v)
+                            break
+                    if "capabilities" in data and isinstance(data["capabilities"], list):
+                        if "vision" in data["capabilities"]:
+                            is_vision = True
+        except Exception as e:
+            logger.debug(f"Ollama show API notice for {model_name}: {e}")
+
+        stable_num_ctx = min(model_max_ctx, budget_ctx)
+        info = {
+            "provider": "ollama",
+            "model_name": model_name,
+            "runtime": "local",
+            "supports_tools": True,
+            "supports_vision": is_vision,
+            "context_limit": stable_num_ctx,
+            "max_context_length": model_max_ctx,
+            "stable_num_ctx": stable_num_ctx,
+            "is_coding": is_coder,
+            "is_reasoning": is_reasoner,
+        }
+        self._model_info_cache[model_name] = info
+        return info
+
+    def get_model_info(self, model_name: str) -> Dict[str, Any]:
+        if model_name in self._model_info_cache:
+            return self._model_info_cache[model_name]
+        is_coder = "coder" in model_name.lower() or "code" in model_name.lower()
+        is_reasoner = "r1" in model_name.lower() or "reason" in model_name.lower()
+        is_vision = "vision" in model_name.lower() or "vl" in model_name.lower() or "llava" in model_name.lower()
+        total_ram_gb = (psutil.virtual_memory().total / (1024 ** 3))
+        budget_ctx = 4096 if total_ram_gb < 12.0 else 8192
         return {
             "provider": "ollama",
             "model_name": model_name,
             "runtime": "local",
             "supports_tools": True,
             "supports_vision": is_vision,
-            "context_limit": 16384 if is_coder else 8192,
+            "context_limit": budget_ctx,
+            "max_context_length": 32768 if is_coder else 8192,
+            "stable_num_ctx": budget_ctx,
             "is_coding": is_coder,
             "is_reasoning": is_reasoner,
         }
@@ -198,7 +252,8 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        num_ctx = self._compute_adaptive_context_size(clean_messages, target_model)
+        model_info = await self.get_model_info_async(target_model)
+        num_ctx = model_info.get("stable_num_ctx", 8192)
         timeout = httpx.Timeout(240.0, connect=15.0, read=240.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -265,7 +320,8 @@ class OllamaProvider(BaseModelProvider):
                     entry["images"] = m["images"]
                 clean_messages.append(entry)
 
-        num_ctx = self._compute_adaptive_context_size(clean_messages, target_model)
+        model_info = await self.get_model_info_async(target_model)
+        num_ctx = model_info.get("stable_num_ctx", 8192)
         timeout = httpx.Timeout(300.0, connect=15.0, read=300.0, write=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:

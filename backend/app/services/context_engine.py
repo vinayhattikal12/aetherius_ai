@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from backend.app.schemas.chat import SourceCitation
 from backend.app.models.memory import Memory
 from backend.app.models.knowledge import DocumentChunk
+from backend.app.core.logging import logger
 
 
 class ContextEngine:
@@ -140,31 +141,7 @@ class ContextEngine:
         full_system_prompt = "\n\n".join(system_sections)
         system_tokens = cls.estimate_tokens(full_system_prompt)
 
-        # 6. Knowledge Context (RAG)
-        rag_text = ""
-        rag_tokens = 0
-        if rag_chunks and len(rag_chunks) > 0:
-            rag_parts = []
-            for chunk, score in rag_chunks:
-                fn = chunk.chunk_metadata.get("filename", "Document")
-                rag_parts.append(f"[Source Document: {fn}]:\n{chunk.content}")
-            rag_text = "Referenced Knowledge Content:\n" + "\n\n".join(rag_parts)
-            rag_tokens = cls.estimate_tokens(rag_text)
-
-        # 7. Web Intelligence Context
-        web_text = ""
-        web_tokens = 0
-        if web_results and len(web_results) > 0:
-            web_parts = []
-            for idx, w in enumerate(web_results, 1):
-                part = f"[{idx}] Title: {w.get('title')}\n    URL: {w.get('url')}\n    Summary: {w.get('snippet')}"
-                if w.get("deep_content"):
-                    part += f"\n    Full Article Excerpt: {w.get('deep_content')}"
-                web_parts.append(part)
-            web_text = "[LIVE WEB SEARCH RESULTS]:\n" + "\n\n".join(web_parts)
-            web_tokens = cls.estimate_tokens(web_text)
-
-        # 8. Accumulated Constraints Injection
+        # 6. Accumulated Constraints Injection
         constraint_text = ""
         if accumulated_constraints:
             valid_c = {k: v for k, v in accumulated_constraints.items() if k != "location" or v != "US"}
@@ -172,11 +149,57 @@ class ContextEngine:
                 c_lines = [f"- {k.replace('_', ' ').title()}: `{v}`" for k, v in valid_c.items()]
                 constraint_text = "[USER CONSTRAINTS (Apply silently)]:\n" + "\n".join(c_lines)
 
-        # 9. Fit Conversation History within remaining token budget
+        # 7. Knowledge Context (RAG) & Web Context Budgeting
+        # Enforce deterministic multi-tier trimming if prompt exceeds available_prompt_tokens
+        # Order: 1. Oldest History -> 2. Lowest-Scoring RAG chunks -> 3. Web Excerpts (System prompt strictly preserved)
+        
         user_msg_tokens = cls.estimate_tokens(current_user_message)
-        consumed_so_far = system_tokens + rag_tokens + web_tokens + user_msg_tokens + cls.estimate_tokens(constraint_text)
-        history_budget = max(400, available_prompt_tokens - consumed_so_far)
+        constraint_tokens = cls.estimate_tokens(constraint_text)
+        mandatory_tokens = system_tokens + user_msg_tokens + constraint_tokens
+        dynamic_budget = max(400, available_prompt_tokens - mandatory_tokens)
 
+        # Allocate dynamic budget across Web (35%), RAG (35%), History (30%)
+        # Filter and rank RAG chunks
+        active_rag_chunks = sorted(rag_chunks or [], key=lambda x: x[1], reverse=True)
+        fitted_rag_parts = []
+        rag_tokens = 0
+        rag_budget = int(dynamic_budget * 0.40)
+
+        for chunk, score in active_rag_chunks:
+            fn = chunk.chunk_metadata.get("filename", "Document")
+            part = f"[Source Document: {fn} (Relevance: {score:.2f})]:\n{chunk.content}"
+            p_tokens = cls.estimate_tokens(part)
+            if rag_tokens + p_tokens <= rag_budget:
+                fitted_rag_parts.append(part)
+                rag_tokens += p_tokens
+            else:
+                logger.warning(f"[context_engine] Trimmed low-scoring RAG chunk ({fn}, score={score:.2f}) to enforce token budget")
+
+        rag_text = ("Referenced Knowledge Content:\n" + "\n\n".join(fitted_rag_parts)) if fitted_rag_parts else ""
+        rag_tokens = cls.estimate_tokens(rag_text)
+
+        # Fit Web Intelligence Context
+        fitted_web_parts = []
+        web_tokens = 0
+        web_budget = int(dynamic_budget * 0.35)
+
+        if web_results:
+            for idx, w in enumerate(web_results, 1):
+                part = f"[{idx}] Title: {w.get('title')}\n    URL: {w.get('url')}\n    Summary: {w.get('snippet')}"
+                if w.get("deep_content"):
+                    part += f"\n    Full Article Excerpt: {w.get('deep_content')[:1200]}"
+                p_tokens = cls.estimate_tokens(part)
+                if web_tokens + p_tokens <= web_budget:
+                    fitted_web_parts.append(part)
+                    web_tokens += p_tokens
+                else:
+                    logger.warning(f"[context_engine] Trimmed web result [{idx}] ({w.get('title')}) to enforce token budget")
+
+        web_text = ("[LIVE WEB SEARCH RESULTS]:\n" + "\n\n".join(fitted_web_parts)) if fitted_web_parts else ""
+        web_tokens = cls.estimate_tokens(web_text)
+
+        # 9. Fit Conversation History within remaining token budget (oldest history trimmed first)
+        history_budget = max(200, available_prompt_tokens - (mandatory_tokens + rag_tokens + web_tokens))
         fitted_history: List[Dict[str, str]] = []
         current_history_tokens = 0
 
@@ -187,7 +210,7 @@ class ContextEngine:
                     fitted_history.insert(0, msg)
                     current_history_tokens += m_tokens
                 else:
-                    break
+                    logger.debug(f"[context_engine] Trimmed older conversation turn from history to fit {history_budget} token budget")
 
         # 10. Construct Final Turn Payload
         augmented_user_parts = []
