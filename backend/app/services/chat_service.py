@@ -260,11 +260,22 @@ class ChatService:
                 return []
 
         async def fetch_web():
+            lower_q = resolved_task.canonical_query.lower().strip()
+            is_casual = (
+                lower_q in ["hi", "hello", "hey", "hello aetherius", "how are you", "ping", "who are you"]
+                or (len(lower_q.split()) <= 2 and not any(k in lower_q for k in ["news", "latest", "price", "stock", "weather"]))
+            )
+            if is_casual:
+                return []
+
             should_search = bool(
                 request.enable_web_search 
                 or getattr(request, "use_web_search", False) 
                 or resolved_task.plan.requires_web_search
             )
+            if should_search and (is_casual or (q_analysis.is_code and not resolved_task.plan.requires_web_search)):
+                should_search = False
+                
             if should_search:
                 try:
                     s_res = await WebSearchService.search(resolved_task.canonical_query, max_results=4)
@@ -463,7 +474,7 @@ class ChatService:
                     turn_type=resolved_task.turn_type,
                     resolved_topic=resolved_task.active_subject or request.message[:50],
                     canonical_prompt=resolved_task.canonical_query,
-                    entities=ConversationStateService.extract_entities(request.message),
+                    entities={e: {"type": "named_entity"} for e in resolved_task.entities} if hasattr(resolved_task, "entities") else {},
                     references=resolved_task.resolved_references,
                     constraints=resolved_task.accumulated_constraints,
                     assistant_summary=assistant_content[:300]
@@ -517,11 +528,25 @@ class ChatService:
         t_req_start = time.perf_counter()
         stages_ms: Dict[str, float] = {}
 
-        # 1. Load Conversation, History & State
+        # 1. Load Conversation & History
         conversation = None
         if request.conversation_id:
             result = await db.execute(select(Conversation).where(Conversation.id == request.conversation_id))
             conversation = result.scalars().first()
+
+        if not conversation:
+            title = request.message[:30] + ("..." if len(request.message) > 30 else "")
+            conversation = Conversation(
+                workspace_slug=request.workspace_slug,
+                title=title,
+                model_name=request.model_name or "llama3.2:3b"
+            )
+            db.add(conversation)
+            await db.commit()
+            await db.refresh(conversation)
+
+        # Yield early init event to unblock frontend
+        yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [], 'model_used': request.model_name or 'auto', 'routing_reason': 'Connecting...'})}\n\n"
 
         recent_history: List[Dict[str, str]] = []
         if conversation:
@@ -530,9 +555,7 @@ class ChatService:
             )
             recent_history = [{"role": h.role, "content": h.content} for h in res_h.scalars().all()[-10:]]
 
-        conv_state = None
-        if conversation:
-            conv_state = await ConversationStateService.get_or_create_state(db, conversation.id)
+        conv_state = await ConversationStateService.get_or_create_state(db, conversation.id)
 
         # Check explicit memory command
         explicit_mem_reply = await MemoryService.handle_explicit_memory_commands(
@@ -541,16 +564,6 @@ class ChatService:
             workspace_slug=request.workspace_slug
         )
         if explicit_mem_reply:
-            if not conversation:
-                conversation = Conversation(
-                    workspace_slug=request.workspace_slug,
-                    title="Memory Command",
-                    model_name=request.model_name or "llama3.2:3b"
-                )
-                db.add(conversation)
-                await db.commit()
-                await db.refresh(conversation)
-
             user_msg = Message(
                 conversation_id=conversation.id,
                 role="user",
@@ -571,7 +584,6 @@ class ChatService:
             await db.commit()
             await db.refresh(assistant_msg)
 
-            yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [], 'model_used': request.model_name or 'llama3.2:3b', 'routing_reason': 'Explicit Memory Command'})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'token': explicit_mem_reply})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': explicit_mem_reply, 'conversation_id': conversation.id, 'model_used': request.model_name or 'llama3.2:3b', 'citations': []})}\n\n"
             return
@@ -643,11 +655,23 @@ class ChatService:
                 return []
 
         async def fetch_web():
+            lower_q = resolved_task.canonical_query.lower().strip()
+            is_casual = (
+                lower_q in ["hi", "hello", "hey", "hello aetherius", "how are you", "ping", "who are you"]
+                or (len(lower_q.split()) <= 2 and not any(k in lower_q for k in ["news", "latest", "price", "stock", "weather"]))
+            )
+            if is_casual:
+                return []
+
             should_search = bool(
                 request.enable_web_search 
                 or getattr(request, "use_web_search", False) 
                 or resolved_task.plan.requires_web_search
             )
+            # Override explicit toggle if it's a pure coding or casual query
+            if should_search and (is_casual or (q_analysis.is_code and not resolved_task.plan.requires_web_search)):
+                should_search = False
+
             if should_search:
                 try:
                     s_res = await WebSearchService.search(resolved_task.canonical_query, max_results=4)
@@ -656,6 +680,11 @@ class ChatService:
                     logger.debug(f"Web search stream error: {e}")
             return []
 
+        # Stream a progress indicator if we are doing heavy lifting
+        is_heavy_lifting = resolved_task.plan.requires_web_search or request.enable_web_search or request.enable_knowledge_rag
+        if is_heavy_lifting:
+            yield f"data: {json.dumps({'type': 'token', 'token': ' *Retrieving live context...* '})}\n\n"
+
         with time_stage(stages_ms, "retrieval"):
             workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
                 fetch_workspace(),
@@ -663,6 +692,9 @@ class ChatService:
                 fetch_rag(),
                 fetch_web()
             )
+        
+        if is_heavy_lifting:
+            yield f"data: {json.dumps({'type': 'token', 'token': '\\r' + ' ' * 30 + '\\r'})}\n\n" # attempt to clear the token (frontend might not support \r, but this is best effort)
 
         workspace_instructions = workspace_obj.instructions if workspace_obj else "You are Aetherius AI."
         workspace_name = workspace_obj.name if workspace_obj else "General"
@@ -707,17 +739,6 @@ class ChatService:
         messages_payload.extend(assembled["fitted_history"])
         messages_payload.append({"role": "user", "content": assembled["augmented_prompt"]})
 
-        if not conversation:
-            title = resolved_task.canonical_query[:30] + ("..." if len(resolved_task.canonical_query) > 30 else "")
-            conversation = Conversation(
-                workspace_slug=request.workspace_slug,
-                title=title,
-                model_name=model_to_use or "llama3.2:3b"
-            )
-            db.add(conversation)
-            await db.commit()
-            await db.refresh(conversation)
-
         # Save User Message
         user_msg = Message(
             conversation_id=conversation.id,
@@ -729,9 +750,6 @@ class ChatService:
         db.add(user_msg)
         await db.commit()
         await db.refresh(user_msg)
-
-        # Send SSE init event immediately so client renders citations and state
-        yield f"data: {json.dumps({'type': 'init', 'conversation_id': conversation.id, 'citations': [c.model_dump() for c in citations], 'model_used': model_to_use, 'routing_reason': routing_reason})}\n\n"
 
         # Stream tokens
         full_response_text = ""
@@ -751,56 +769,60 @@ class ChatService:
                     stages_ms["first_token"] = first_token_ms
                 full_response_text += token
                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+        except asyncio.CancelledError:
+            err_msg = " [Generation interrupted by user]"
+            full_response_text += err_msg
+            raise
         except Exception as e:
             err_msg = f"\n[Model stream notice: {str(e)}]"
             full_response_text += err_msg
             yield f"data: {json.dumps({'type': 'token', 'token': err_msg})}\n\n"
-
-        stages_ms["generation"] = round((time.perf_counter() - t_gen_start) * 1000.0, 2)
-
-        # Save Assistant Message
-        cleaned_response_text = ChatService.clean_model_response(full_response_text)
-        assistant_metadata = {
-            "rag_applied": rag_applied,
-            "web_searched": web_searched,
-            "routing_reason": routing_reason,
-            "execution_mode": execution_mode,
-            "constraints_applied": resolved_task.accumulated_constraints,
-            "turn_type": resolved_task.turn_type,
-            "canonical_prompt": resolved_task.canonical_query,
-            "resolved_topic": resolved_task.active_subject,
-        }
-
-        with time_stage(stages_ms, "persistence"):
-            assistant_msg = Message(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=cleaned_response_text,
-                model_name=actual_model_name,
-                citations=[c.model_dump() for c in citations],
-                token_count=len(cleaned_response_text.split()),
-                extra_metadata=assistant_metadata
-            )
-            db.add(assistant_msg)
-            await db.commit()
-            await db.refresh(assistant_msg)
-
-            # Update Conversation State
+        finally:
+            stages_ms["generation"] = round((time.perf_counter() - t_gen_start) * 1000.0, 2)
+    
+            # Save Assistant Message
+            cleaned_response_text = ChatService.clean_model_response(full_response_text)
+            assistant_metadata = {
+                "rag_applied": rag_applied,
+                "web_searched": web_searched,
+                "routing_reason": routing_reason,
+                "execution_mode": execution_mode,
+                "constraints_applied": resolved_task.accumulated_constraints,
+                "turn_type": resolved_task.turn_type,
+                "canonical_prompt": resolved_task.canonical_query,
+                "resolved_topic": resolved_task.active_subject,
+            }
+    
             try:
-                await ConversationStateService.update_state_turn(
-                    db=db,
-                    conversation_id=conversation.id,
-                    user_message=request.message,
-                    turn_type=resolved_task.turn_type,
-                    resolved_topic=resolved_task.active_subject or request.message[:50],
-                    canonical_prompt=resolved_task.canonical_query,
-                    entities=ConversationStateService.extract_entities(request.message),
-                    references=resolved_task.resolved_references,
-                    constraints=resolved_task.accumulated_constraints,
-                    assistant_summary=cleaned_response_text[:300]
-                )
+                with time_stage(stages_ms, "persistence"):
+                    assistant_msg = Message(
+                        conversation_id=conversation.id,
+                        role="assistant",
+                        content=cleaned_response_text,
+                        model_name=actual_model_name,
+                        citations=[c.model_dump() for c in citations],
+                        token_count=len(cleaned_response_text.split()),
+                        extra_metadata=assistant_metadata
+                    )
+                    db.add(assistant_msg)
+                    await db.commit()
+                    await db.refresh(assistant_msg)
+        
+                    # Update Conversation State
+                    await ConversationStateService.update_state_turn(
+                        db=db,
+                        conversation_id=conversation.id,
+                        user_message=request.message,
+                        turn_type=resolved_task.turn_type,
+                        resolved_topic=resolved_task.active_subject or request.message[:50],
+                        canonical_prompt=resolved_task.canonical_query,
+                        entities={e: {"type": "named_entity"} for e in resolved_task.entities} if hasattr(resolved_task, "entities") else {},
+                        references=resolved_task.resolved_references,
+                        constraints=resolved_task.accumulated_constraints,
+                        assistant_summary=cleaned_response_text[:300]
+                    )
             except Exception as state_err:
-                logger.warning(f"State update notice: {state_err}")
+                logger.warning(f"State update notice during cleanup: {state_err}")
 
         total_ms = (time.perf_counter() - t_req_start) * 1000.0
         

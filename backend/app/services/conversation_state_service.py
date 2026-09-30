@@ -123,16 +123,25 @@ class ConversationStateService:
         # 8. Follow-up vs New Topic
         has_pronoun = any(p in words for p in cls.PRONOUNS)
         has_pro_form = any(pf in clean_text for pf in cls.PRO_FORMS)
-        is_short_fragment = len(words) <= 6
+        
+        # Check if the text is a greeting
+        is_greeting = clean_text in ["hi", "hello", "hey", "heyy", "ping", "morning", "who are you"]
 
-        if (has_pronoun or has_pro_form or is_short_fragment) and current_topic:
-            return TurnType.FOLLOW_UP
-
-        # If length is substantial and has no relation to current topic, consider new topic
-        if len(words) > 10 and not has_pronoun and not has_pro_form:
+        if is_greeting:
             return TurnType.NEW_TOPIC
 
-        return TurnType.FOLLOW_UP if current_topic else TurnType.NEW_TOPIC
+        # If it has pronouns or pro-forms, it's referring to the past
+        if (has_pronoun or has_pro_form) and current_topic:
+            return TurnType.FOLLOW_UP
+
+        # If it's a very short fragment (<= 6 words) BUT it introduces a completely new standalone question (like "what is X"), it might be a new topic.
+        # We check for generic standalone question starters
+        is_standalone_question = re.match(r"^(what is|who is|explain|define|tell me about)\b", clean_text, re.IGNORECASE)
+
+        if len(words) <= 6 and current_topic and not is_standalone_question:
+            return TurnType.FOLLOW_UP
+
+        return TurnType.NEW_TOPIC
 
     @classmethod
     def clean_subject_name(cls, raw: str) -> str:
@@ -385,7 +394,7 @@ class ConversationStateService:
         prior_all_priority = [e for e in prior_entity_stack if entity_types.get(e) in priority_types]
         user_priority = [e for e in user_entity_stack if entity_types.get(e) in priority_types]
 
-        if (has_pronoun or is_short or has_pro_form):
+        if has_pronoun or has_pro_form:
             if prior_user_priority:
                 active_subject = prior_user_priority[-1]
             elif prior_all_priority:
@@ -397,7 +406,7 @@ class ConversationStateService:
         else:
             if user_priority:
                 active_subject = user_priority[-1]
-            elif prior_all_priority:
+            elif prior_all_priority and is_short and not re.match(r"^(what is|who is|explain|define)\b", query, re.IGNORECASE):
                 active_subject = prior_all_priority[-1]
             elif entity_stack:
                 active_subject = entity_stack[-1]
@@ -466,7 +475,9 @@ class ConversationStateService:
                 canonical = f"What are the job opportunities for {active_subject or active_topic}?"
             elif re.match(r"^in\s+([\w\s]+)\??$", lower_q):
                 target = re.sub(r"^in\s+", "", lower_q).replace("?", "").strip()
-                canonical = f"{active_subject or active_topic} in {target.capitalize()}"
+                # For "in X", the subject is the previous topic, not X itself
+                prior_subj = prior_all_priority[-1] if prior_all_priority else active_topic
+                canonical = f"{prior_subj} in {target.capitalize()}"
             elif lower_q in ["small cap", "small cap.", "small-cap"]:
                 canonical = f"{active_topic or active_subject} (small cap)"
             elif lower_q in ["give details", "give details.", "details"]:

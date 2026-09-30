@@ -46,18 +46,17 @@ class EmbeddingService:
             _OLLAMA_AVAILABLE = False
             _INSTALLED_EMBED_MODELS = set()
         return False
-
+        
     @classmethod
-    async def embed_text(cls, text: str, model_name: str = "nomic-embed-text", use_remote_ollama: bool = False) -> List[float]:
-        """
-        Sub-millisecond semantic vectorization (<0.01 ms execution in Python RAM).
-        Zero-latency and zero Ollama model-swapping eviction during online chat.
-        """
-        # If explicitly requested for background batch ingestion and Ollama embedding support is available:
+    async def embed_text(cls, text: str, model_name: str = "nomic-embed-text", use_remote_ollama: bool = True) -> List[float]:
+        if not use_remote_ollama:
+            logger.warning("Local semantic hashing is deprecated. Falling back to Ollama.")
+            use_remote_ollama = True
+            
         if use_remote_ollama and await cls._check_ollama_embed_support():
             target_model = model_name if model_name in _INSTALLED_EMBED_MODELS else (next(iter(_INSTALLED_EMBED_MODELS)) if _INSTALLED_EMBED_MODELS else model_name)
             try:
-                async with httpx.AsyncClient(timeout=1.5) as client:
+                async with httpx.AsyncClient(timeout=5.0) as client:
                     res = await client.post(
                         "http://127.0.0.1:11434/api/embeddings",
                         json={"model": target_model, "prompt": text}
@@ -66,16 +65,14 @@ class EmbeddingService:
                         emb = res.json().get("embedding", [])
                         if emb:
                             return cls._project_to_dim(emb, EMBEDDING_DIM)
-            except Exception:
-                pass
-
-        # Fast deterministic subword semantic embedding (<0.01 ms execution)
-        return cls._generate_semantic_vector(text, EMBEDDING_DIM)
+            except Exception as e:
+                logger.error(f"Failed to fetch real embeddings from Ollama: {e}")
+                raise RuntimeError("Failed to generate semantic vector. Ensure an Ollama embedding model (like nomic-embed-text) is installed.")
+                
+        raise RuntimeError("No Ollama embedding model found. Please install nomic-embed-text.")
 
     @classmethod
-    async def embed_batch(cls, texts: List[str], model_name: str = "nomic-embed-text", use_remote_ollama: bool = False) -> List[List[float]]:
-        if not use_remote_ollama:
-            return [cls._generate_semantic_vector(t, EMBEDDING_DIM) for t in texts]
+    async def embed_batch(cls, texts: List[str], model_name: str = "nomic-embed-text", use_remote_ollama: bool = True) -> List[List[float]]:
         return [await cls.embed_text(t, model_name, use_remote_ollama=True) for t in texts]
 
     @classmethod

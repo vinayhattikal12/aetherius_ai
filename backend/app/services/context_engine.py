@@ -64,7 +64,10 @@ class ContextEngine:
         if workspace_instructions:
             system_sections.append(f"### [WORKSPACE ROLE DIRECTIVES]:\n{workspace_instructions}")
 
-        # 2. Conversational State & Turn Intent Layer
+        # 2. Dynamic Context (Move out of System Prompt to preserve KV Cache!)
+        dynamic_context_parts = []
+        
+        # Conversational State & Turn Intent Layer
         if conversation_state:
             state_lines = []
             topic = conversation_state.get("topic")
@@ -98,7 +101,7 @@ class ContextEngine:
                 state_lines.append(f"Context Guidance: {turn_guidance[turn_type]}")
 
             if state_lines:
-                system_sections.append("[CONVERSATION CONTEXT (Internal Guidance - Do Not Echo)]:\n" + "\n".join(state_lines))
+                dynamic_context_parts.append("[CONVERSATION CONTEXT (Internal Guidance)]:\n" + "\n".join(state_lines))
 
         # 3. User & Environment Context Layer
         env_lines = []
@@ -110,16 +113,16 @@ class ContextEngine:
                 env_lines.append(f"- Preference ({k}): {v}")
 
         if env_lines:
-            system_sections.append(f"[ENVIRONMENT & USER CONTEXT]:\n" + "\n".join(env_lines))
+            dynamic_context_parts.append(f"[ENVIRONMENT & USER CONTEXT]:\n" + "\n".join(env_lines))
 
         # 4. Active Task & Project Context Layer
         if task_context:
             task_desc = f"Objective: {task_context.get('objective', 'Active Task')}\nStatus: {task_context.get('status', 'running')}\nCurrent Step: {task_context.get('current_step', 'in progress')}"
-            system_sections.append(f"[ACTIVE TASK CONTEXT]:\n{task_desc}")
+            dynamic_context_parts.append(f"[ACTIVE TASK CONTEXT]:\n{task_desc}")
 
         if project_context:
             proj_desc = f"Project: {project_context.get('name', 'Active Workspace')}\nActive Files: {project_context.get('files', [])}"
-            system_sections.append(f"[PROJECT CONTEXT]:\n{proj_desc}")
+            dynamic_context_parts.append(f"[PROJECT CONTEXT]:\n{proj_desc}")
 
         # 5. Memory Context Layer (Semantic & Episodic)
         if memories and len(memories) > 0:
@@ -128,15 +131,15 @@ class ContextEngine:
                 m_type = m.memory_type.upper() if hasattr(m, "memory_type") else "FACT"
                 m_content = m.content if hasattr(m, "content") else str(m)
                 mem_lines.append(f"- [{m_type}] {m_content}")
-            system_sections.append(
-                f"[USER PROFILE & PERSONAL MEMORY (Personal user context only - Never extrapolate personal background into public corporate facts or company leadership)]:\n"
+            dynamic_context_parts.append(
+                f"[USER PROFILE & PERSONAL MEMORY (Never extrapolate into public facts)]:\n"
                 + "\n".join(mem_lines)
             )
 
         # 6. Tool Context Layer
         if tool_definitions and len(tool_definitions) > 0:
             tool_summaries = [f"- `{t.get('name')}`: {t.get('description')}" for t in tool_definitions]
-            system_sections.append(f"[AVAILABLE SANDBOX TOOLS]:\n" + "\n".join(tool_summaries))
+            dynamic_context_parts.append(f"[AVAILABLE SANDBOX TOOLS]:\n" + "\n".join(tool_summaries))
 
         full_system_prompt = "\n\n".join(system_sections)
         system_tokens = cls.estimate_tokens(full_system_prompt)
@@ -163,7 +166,7 @@ class ContextEngine:
         active_rag_chunks = sorted(rag_chunks or [], key=lambda x: x[1], reverse=True)
         fitted_rag_parts = []
         rag_tokens = 0
-        rag_budget = int(dynamic_budget * 0.40)
+        rag_budget = min(int(dynamic_budget * 0.40), 1200) # Hard cap for local execution speed
 
         for chunk, score in active_rag_chunks:
             fn = chunk.chunk_metadata.get("filename", "Document")
@@ -181,13 +184,14 @@ class ContextEngine:
         # Fit Web Intelligence Context
         fitted_web_parts = []
         web_tokens = 0
-        web_budget = int(dynamic_budget * 0.35)
+        web_budget = min(int(dynamic_budget * 0.35), 800) # Hard cap for local execution speed
 
         if web_results:
             for idx, w in enumerate(web_results, 1):
                 part = f"[{idx}] Title: {w.get('title')}\n    URL: {w.get('url')}\n    Summary: {w.get('snippet')}"
                 if w.get("deep_content"):
-                    part += f"\n    Full Article Excerpt: {w.get('deep_content')[:1200]}"
+                    # Aggressive trim for local CPU models to prevent 50s prompt eval times
+                    part += f"\n    Full Article Excerpt: {w.get('deep_content')[:400]}"
                 p_tokens = cls.estimate_tokens(part)
                 if web_tokens + p_tokens <= web_budget:
                     fitted_web_parts.append(part)
@@ -214,6 +218,9 @@ class ContextEngine:
 
         # 10. Construct Final Turn Payload
         augmented_user_parts = []
+        if dynamic_context_parts:
+            augmented_user_parts.extend(dynamic_context_parts)
+
         if constraint_text:
             augmented_user_parts.append(constraint_text)
         if rag_text:

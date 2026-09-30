@@ -63,10 +63,11 @@ async def test_memory_isolation_in_context_engine():
     )
 
     sys_prompt = assembled["system_prompt"]
+    augmented = assembled["augmented_prompt"]
     # Check that system prompt explicitly contains isolation directives
     assert "USER PROFILE MEMORY ISOLATION" in sys_prompt
     assert "STRICT FACTUAL GROUNDING & ZERO HALLUCINATION" in sys_prompt
-    assert "[USER PROFILE & PERSONAL MEMORY" in sys_prompt
+    assert "[USER PROFILE & PERSONAL MEMORY" in augmented
 
 
 @pytest.mark.asyncio

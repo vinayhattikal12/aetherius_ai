@@ -119,35 +119,41 @@ class MemoryService:
         top_k: int = 6,
         min_similarity: float = 0.05
     ) -> List[Tuple[Memory, float]]:
-        """Retrieves semantically similar memories from PostgreSQL using cosine similarity."""
+        """Retrieves semantically similar memories from PostgreSQL using pgvector cosine similarity."""
         query_vector = await EmbeddingService.embed_text(query)
 
-        # Include both global and workspace-scoped memories with a strict scan cap of 50 most relevant rows
-        stmt = select(Memory).order_by(Memory.importance_weight.desc(), Memory.last_accessed_at.desc()).limit(50)
+        # Distance expression: 1 - cosine_similarity
+        distance = Memory.embedding_vector.cosine_distance(query_vector)
+        # Similarity: 1 - distance
+        similarity = 1.0 - distance
+
+        stmt = select(Memory, similarity.label('sim'))
+        
         if workspace_slug:
             if workspace_slug == "general":
                 stmt = stmt.where(Memory.workspace_slug == "general")
             else:
                 stmt = stmt.where(Memory.workspace_slug.in_([workspace_slug, "general"]))
 
+        # Database-level filtering and ranking! 
+        stmt = stmt.where(similarity >= min_similarity).order_by(distance).limit(50)
+
         result = await db.execute(stmt)
-        memories = result.scalars().all()
+        rows = result.all()
 
         scored_memories: List[Tuple[Memory, float]] = []
         now = utc_now()
 
-        for m in memories:
-            if m.embedding_vector:
-                sim = EmbeddingService.cosine_similarity(query_vector, m.embedding_vector)
-                # Boost similarity by importance weight (1.0 - 5.0) and high-priority preferences
-                boost = 1.0 + (m.importance_weight - 1.0) * 0.15
-                if m.memory_type in ("preference", "instruction"):
-                    boost += 0.1
-                weighted_score = sim * boost
-                if sim >= min_similarity:
-                    m.access_count += 1
-                    m.last_accessed_at = now
-                    scored_memories.append((m, round(weighted_score, 4)))
+        for mem, sim in rows:
+            # Boost similarity by importance weight (1.0 - 5.0) and high-priority preferences
+            boost = 1.0 + (mem.importance_weight - 1.0) * 0.15
+            if mem.memory_type in ("preference", "instruction"):
+                boost += 0.1
+            weighted_score = float(sim) * boost
+            
+            mem.access_count += 1
+            mem.last_accessed_at = now
+            scored_memories.append((mem, round(weighted_score, 4)))
 
         await db.commit()
 

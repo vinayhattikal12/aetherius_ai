@@ -104,64 +104,36 @@ class ImageGenService:
     @classmethod
     async def generate_image(cls, req: ImageGenerationRequest) -> ImageGenerationResponse:
         """
-        Generate image using configured diffusion provider.
-        Enforces LOCAL_ONLY boundaries and avoids fake generated placeholders.
+        Generate image using a strictly local diffusion provider (e.g., ComfyUI).
+        Enforces LOCAL_ONLY boundaries and avoids fake generated placeholders or cloud leaks.
         """
-        if settings.LOCAL_ONLY:
-            raise RuntimeError("Image generation is disabled in LOCAL_ONLY mode because no local diffusion engine is configured.")
-
+        comfy_url = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
+        
+        # We enforce local generation for privacy. 
+        # If the local endpoint is not available, we fail honestly rather than silently leaking prompts to the cloud.
+        
         width, height = cls.ASPECT_RATIO_DIMENSIONS.get(req.aspect_ratio, (1024, 1024))
         enhanced_prompt = cls._enhance_prompt(req.prompt, req.style_preset)
-        encoded_prompt = urllib.parse.quote(enhanced_prompt)
 
         seed = random.randint(100000, 999999)
-        remote_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={width}&height={height}&seed={seed}&nologo=true&enhance=true"
-
-        image_bytes: Optional[bytes] = None
-        ext = "jpg"
-        mime_type = "image/jpeg"
-
-        # 1. Download image bytes from diffusion provider
+        
+        # Here we would construct a ComfyUI workflow JSON. 
+        # For this refactor, we just verify the endpoint is alive to prove it's a real local engine.
         try:
-            async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
-                res = await client.get(remote_url)
-                if res.status_code == 200 and len(res.content) > 1000:
-                    image_bytes = res.content
-                    content_type = res.headers.get("content-type", "")
-                    if "png" in content_type:
-                        ext = "png"
-                        mime_type = "image/png"
-                    elif "webp" in content_type:
-                        ext = "webp"
-                        mime_type = "image/webp"
-                else:
-                    raise RuntimeError(f"Diffusion provider returned HTTP status {res.status_code}")
-        except Exception as e:
-            logger.error(f"Image generation failed: {e}")
-            raise RuntimeError(f"Image generation failed: {e}")
-
-        # 2. Save file locally in storage
-        filename = f"gen_{uuid.uuid4().hex[:12]}.{ext}"
-        saved_path = storage.save_file(image_bytes, filename, subfolder="generated_images")
-        saved_filename = os.path.basename(saved_path)
-
-        # 3. Generate base64 Data URI for instant local preview
-        b64_str = base64.b64encode(image_bytes).decode("utf-8")
-        data_uri = f"data:{mime_type};base64,{b64_str}"
-
-        # 4. Build local API serving URL
-        local_url = f"http://127.0.0.1:8000/api/v1/chat/images/{saved_filename}"
-
-        return ImageGenerationResponse(
-            image_url=local_url,
-            preview_url=data_uri,
-            prompt=req.prompt,
-            revised_prompt=enhanced_prompt,
-            aspect_ratio=req.aspect_ratio,
-            provider="pollinations-flux-turbo",
-            model_name="FLUX.1-Turbo / SD-Turbo",
-            width=width,
-            height=height,
-            seed=seed,
-        )
+            async with httpx.AsyncClient(timeout=3.0) as check_client:
+                res = await check_client.get(comfy_url)
+                if res.status_code != 200:
+                    raise RuntimeError("Local ComfyUI endpoint not ready.")
+        except Exception:
+            raise RuntimeError(
+                "Image generation failed: No local diffusion engine found at ComfyUI default port (8188). "
+                "Aetherius strictly enforces local-first generation for privacy and will not send your prompt to a cloud API. "
+                "Please start your local ComfyUI or Stable Diffusion WebUI instance."
+            )
+            
+        # If we had a running ComfyUI, we would execute the prompt here.
+        # Since this is a structural refactor to remove the cloud API leak, we will just simulate a failure 
+        # that accurately reflects the missing local engine, rather than secretly calling pollinations.ai.
+        
+        raise RuntimeError("Local ComfyUI is running, but workflow mapping is not yet implemented in this version.")
 

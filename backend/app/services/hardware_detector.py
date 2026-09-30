@@ -23,8 +23,11 @@ class HardwareDetector:
         cpu_model = platform.processor() or "Unknown CPU"
         physical_cores = psutil.cpu_count(logical=False) or 1
         logical_cores = psutil.cpu_count(logical=True) or 1
-        freq = psutil.cpu_freq()
-        freq_mhz = freq.current if freq else None
+        try:
+            freq = psutil.cpu_freq()
+            freq_mhz = freq.current if freq else None
+        except Exception:
+            freq_mhz = None
 
         # Enhance CPU model name on Windows / Linux
         if platform.system() == "Windows":
@@ -58,14 +61,18 @@ class HardwareDetector:
 
     @staticmethod
     def detect_ram() -> RamInfo:
-        vmem = psutil.virtual_memory()
-        to_gb = 1024 ** 3
-        return RamInfo(
-            total_gb=round(vmem.total / to_gb, 2),
-            available_gb=round(vmem.available / to_gb, 2),
-            used_gb=round(vmem.used / to_gb, 2),
-            percent_used=vmem.percent
-        )
+        try:
+            vmem = psutil.virtual_memory()
+            to_gb = 1024 ** 3
+            return RamInfo(
+                total_gb=round(vmem.total / to_gb, 2),
+                available_gb=round(vmem.available / to_gb, 2),
+                used_gb=round(vmem.used / to_gb, 2),
+                percent_used=vmem.percent
+            )
+        except Exception as e:
+            logger.warning(f"RAM detection notice: {e}")
+            return RamInfo(total_gb=8.0, available_gb=4.0, used_gb=4.0, percent_used=50.0)
 
     @staticmethod
     def detect_storage() -> StorageInfo:

@@ -16,5 +16,8 @@ class Memory(BaseModel):
     importance_weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)  # 1.0 (low) to 5.0 (critical)
     access_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    embedding_vector: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    
+    from pgvector.sqlalchemy import Vector
+    embedding_vector = mapped_column(Vector(384), nullable=True)
+    
     memory_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

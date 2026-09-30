@@ -242,9 +242,9 @@ async def test_context_engine_with_conversation_state():
     sys_prompt = assembled["system_prompt"]
     augmented = assembled["augmented_prompt"]
 
-    # Verify Conversation State layer in system prompt
-    assert "CONVERSATION CONTEXT" in sys_prompt or "CONVERSATION STATE" in sys_prompt
-    assert "PostgreSQL Query Optimization" in sys_prompt
+    # Verify Conversation State layer in augmented prompt
+    assert "CONVERSATION CONTEXT" in augmented or "CONVERSATION STATE" in augmented
+    assert "PostgreSQL Query Optimization" in augmented
 
     # Verify Accumulated Constraints layer
     assert "USER CONSTRAINTS" in augmented or "ACCUMULATED" in augmented

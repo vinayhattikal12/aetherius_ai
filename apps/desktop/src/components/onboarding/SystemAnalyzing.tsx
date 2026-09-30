@@ -55,10 +55,16 @@ export const SystemAnalyzing: React.FC<SystemAnalyzingProps> = ({
             <span>Hardware Intelligence Engine</span>
           </div>
           <h2 className="text-3xl font-bold tracking-tight text-white">
-            {isLoading || scanStep < 5 ? 'Analyzing your system...' : 'System Profile Ready'}
+            {isLoading || scanStep < 5
+              ? 'Analyzing your system...'
+              : !profile
+              ? 'Analysis Failed'
+              : 'System Profile Ready'}
           </h2>
           <p className="text-sm text-[#949494]">
-            Aetherius is benchmarking your CPU, memory, GPU, and acceleration to match optimal models.
+            {isLoading || scanStep < 5 || profile
+              ? 'Aetherius is benchmarking your CPU, memory, GPU, and acceleration to match optimal models.'
+              : 'Ensure the Aetherius backend is running and try again.'}
           </p>
         </div>
 

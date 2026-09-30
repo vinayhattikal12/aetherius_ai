@@ -45,7 +45,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """Initialize database extensions and tables."""
-    # 1. Attempt vector extension in isolated connection
     try:
         async with engine.connect() as conn:
             try:
@@ -53,10 +52,17 @@ async def init_db() -> None:
                 await conn.commit()
                 logger.info("pgvector extension verified.")
             except Exception as ext_err:
-                logger.warning(f"pgvector extension notice (will be available via Docker container): {ext_err}")
                 await conn.rollback()
+                raise RuntimeError(
+                    "CRITICAL ERROR: Aetherius requires a PostgreSQL database with the 'pgvector' extension installed. "
+                    "Rule 1 strictly forbids falling back to SQLite or flat JSON. "
+                    "Please install pgvector or run the database via Docker: `docker run --name aetherius-db -e POSTGRES_PASSWORD=postgrespassword -e POSTGRES_DB=aetherius -p 54329:5432 -d pgvector/pgvector:pg16`"
+                ) from ext_err
+    except RuntimeError:
+        raise
     except Exception as e:
-        logger.warning(f"Extension check notice: {e}")
+        logger.error(f"Failed to connect to database during pgvector check: {e}")
+        raise RuntimeError(f"Database connection failed: {e}")
 
     # 2. Create all registered tables
     try:

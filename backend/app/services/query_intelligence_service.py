@@ -207,125 +207,48 @@ class QueryIntelligenceService:
         history = conversation_history or []
         normalized = cls.normalize_text(user_message)
 
-        # 1. Resolve anaphora, references, constraints, and active entities
-        canonical, base_topic, references, constraints, resolved_entities = ConversationStateService.resolve_references(
-            query=user_message,
-            history=history,
-            state=conversation_state
-        )
+        from backend.app.services.llm_router_service import LLMRouterService
+        
+        # 1. Use the new LLM Router for all NLP intelligence
+        router_result = await LLMRouterService.analyze_intent_and_entities(user_message, history)
+        
+        turn_type = router_result.get("turn_type", "NEW_TOPIC")
+        base_topic = router_result.get("active_topic")
+        canonical = router_result.get("canonical_query", user_message)
+        extracted_entities = [e.get("name") for e in router_result.get("extracted_entities", [])]
+        
+        is_search = router_result.get("requires_web_search", False)
+        is_visual = router_result.get("is_visual_request", False)
+        is_code = router_result.get("is_code_request", False)
+        
+        # Keep empty constraints/references for now as they are not heavily used
+        constraints = {}
+        references = {}
+        resolved_entities = []
+        is_reasoning = False
+        is_fast = False
+        is_volatile = is_search
+        is_entity_query = False
+        is_conceptual_explanation = not is_search
 
-        # 2. Classify conversational turn relation
-        turn_type = ConversationStateService.classify_turn(
-            current_message=user_message,
-            history=history,
-            current_topic=base_topic
-        )
-
-        # 3. Extract named entities with typing
-        extracted_entities_dict = ConversationStateService.extract_entities(user_message)
-        extracted_entities = list(extracted_entities_dict.keys())
-        has_real_world_entity = any(
-            info.get("type") in ["organization", "person", "named_entity"]
-            for info in extracted_entities_dict.values()
-        )
-
-        # 4. Instant Intent Centroids Cosine Proximity (<0.05ms)
-        query_emb = EmbeddingService._generate_semantic_vector(canonical)
-
-        scores: Dict[str, float] = {}
-        for intent, c_emb in cls._centroid_embeddings.items():
-            sim = EmbeddingService.cosine_similarity(query_emb, c_emb)
-            scores[intent] = round(sim, 3)
-
-        # 5. Detect Capabilities & Intents
-        lower_c = canonical.lower().strip()
-        is_visual = (
-            scores.get("visual_generation", 0) > 0.65
-            or any(k in lower_c for k in ["draw", "paint", "sketch", "visualize", "diagram", "picture", "generate image"])
-        )
-        is_code = (
-            scores.get("code_generation", 0) > 0.60
-            or any(k in lower_c for k in ["code", "function", "class", "python", "typescript", "javascript", "sql", "api", "bug", "refactor", "unit test"])
-        )
-        is_reasoning = (
-            scores.get("deep_reasoning", 0) > 0.60
-            or any(k in lower_c for k in ["step by step", "proof", "derive", "algorithm", "trade-off", "why", "root cause"])
-        )
-
-        # 6. Semantic Volatility & Knowledge Layer Proximity
-        s_sim = EmbeddingService.cosine_similarity(query_emb, cls._anchor_embeddings["stable_conceptual"])
-        v_sim = EmbeddingService.cosine_similarity(query_emb, cls._anchor_embeddings["volatile_temporal"])
-        e_sim = EmbeddingService.cosine_similarity(query_emb, cls._anchor_embeddings["entity_fact"])
-
-        # Knowledge Volatility & Freshness Signal (paraphrases, ecosystem shifts, live data)
-        is_volatile = (v_sim > s_sim and v_sim > 0.05) or (v_sim > 0.18)
-
-        # Entity Fact & Grounding Requirement (specific factual lookup for companies, persons, or real-world entities)
-        has_org_or_person = any(
-            info.get("type") in ["organization", "person", "named_entity"]
-            for info in extracted_entities_dict.values()
-        )
-        is_entity_lookup = (
-            (has_org_or_person or any(k in lower_c for k in ["solutions", "technologies", "inc", "ltd", "corp"]))
-            and (
-                any(k in lower_c for k in ["tell me about", "who is", "ceo", "founder", "net worth", "headquarters", "revenue", "overview of", "profile of", "services", "products of"])
-                or (e_sim > s_sim and e_sim > 0.12)
-            )
-            and not any(k in lower_c for k in ["how to", "how do i", "how can i", "i want to", "steps to", "guide to", "advice on", "tips for"])
-        )
-
-        is_entity_query = is_entity_lookup
-        is_definition_question = (
-            lower_c.startswith("what is") or lower_c.startswith("explain") or lower_c.startswith("who is") or lower_c.startswith("define")
-        )
-
-        # Stable Conceptual / Advisory Filter (programming fundamentals, tutorials, conceptual architecture)
-        is_conceptual_explanation = (
-            (s_sim >= v_sim)
-            and not is_volatile
-            and not is_entity_lookup
-        ) or (
-            any(lower_c.startswith(k) for k in ["how to", "how can i", "how do i", "i want to", "steps to", "guide to", "why is", "what is a", "what are", "explain how"])
-            and not is_volatile
-            and not is_entity_lookup
-        )
-
-        # Final Search Determination: Provider-independent intelligent search decision
-        is_search = (is_volatile or is_entity_lookup or scores.get("web_search", 0) > 0.65) and not is_conceptual_explanation
-
-        is_fast = (
-            scores.get("fast_lookup", 0) > 0.70 
-            and len(normalized.split()) <= 3 
-            and not is_code 
-            and not is_search 
-            and not is_reasoning
-            and not is_definition_question
-        )
-
+        lower_c = canonical.lower()
+        
         domain = cls.detect_domain(canonical, extracted_entities)
 
         # Composite Intents
         composite = []
-        if is_entity_query:
-            composite.append("entity_overview")
-        if is_definition_question or scores.get("definition", 0) > 0.40:
-            if not is_entity_query:
-                composite.append("definition" if (lower_c.startswith("what is") or lower_c.startswith("define")) else "explanation")
-        if is_search and not is_entity_query:
-            composite.append("current_information" if any(k in lower_c for k in ["today", "yesterday", "latest", "2025", "2026"]) else "web_search")
         if is_code:
             composite.append("code_generation")
-        if is_reasoning:
-            composite.append("deep_reasoning")
         if is_visual:
             composite.append("visual_generation")
-        if "compare" in lower_c or "versus" in lower_c or turn_type == TurnType.COMPARISON:
-            composite.append("comparison")
+        if is_search:
+            composite.append("web_search")
+            
         if not composite:
             composite.append("general_question")
 
         primary = composite[0] if composite else "general_question"
-        complexity = round(min(0.95, max(0.15, (len(normalized.split()) * 0.03) + (0.3 if is_reasoning or is_code else 0.0))), 2)
+        complexity = 0.5
 
         visual_prompt = cls.synthesize_visual_prompt(user_message, base_topic) if is_visual else None
 
@@ -391,6 +314,6 @@ class QueryIntelligenceService:
             complexity=complexity,
             primary_intent=primary,
             composite_intents=composite,
-            intent_scores=scores,
+            intent_scores={},
             resolved_task=resolved_task
         )

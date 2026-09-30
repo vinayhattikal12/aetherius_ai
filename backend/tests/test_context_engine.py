@@ -45,7 +45,7 @@ def test_assemble_context_with_budget():
         current_user_message="Provide an example of an async session context manager."
     )
 
-    assert "FastAPI and PostgreSQL" in assembled["system_prompt"]
+    assert "FastAPI and PostgreSQL" in assembled["augmented_prompt"]
     assert "Always write modular code" in assembled["system_prompt"]
     assert "SQLAlchemy Async" in assembled["augmented_prompt"]
     assert len(assembled["fitted_history"]) >= 1
