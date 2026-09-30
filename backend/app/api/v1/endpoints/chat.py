@@ -22,13 +22,25 @@ from backend.app.services.image_gen_service import (
 router = APIRouter()
 
 
+import re
+
+# Strict filename pattern for generated images: alphanumeric, underscores, hyphens, and standard image extensions
+IMAGE_FILENAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|webp|svg)$", re.IGNORECASE)
+
+
 @router.get("/images/{filename}")
 async def get_generated_image(filename: str):
     """Serve locally stored generated images with optimal caching and content headers."""
-    folder = os.path.join(storage.base_dir, "generated_images")
-    file_path = os.path.join(folder, filename)
-    
-    if not os.path.exists(file_path):
+    # Strict validation of filename format to prevent any directory traversal
+    if not IMAGE_FILENAME_PATTERN.match(filename) or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid image filename format")
+
+    try:
+        file_path = storage.resolve_safe_path(filename, subfolder="generated_images")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Requested image not found")
         
     ext = os.path.splitext(filename)[1].lower()
@@ -51,6 +63,9 @@ async def upload_chat_file(
     """Upload a document, spreadsheet, or image directly into the active chat session."""
     try:
         content_bytes = await file.read()
+        if len(content_bytes) > 25 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Uploaded file exceeds 25 MB limit")
+
         filename = file.filename or "attachment"
         ext = os.path.splitext(filename)[1].lower().replace(".", "")
         
