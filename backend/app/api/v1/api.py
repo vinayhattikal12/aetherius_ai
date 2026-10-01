@@ -16,6 +16,7 @@ from backend.app.api.v1.endpoints import (
     audit,
     export,
     diagnostics,
+    artifacts,
 )
 
 api_router = APIRouter()
@@ -36,3 +37,4 @@ api_router.include_router(agents.router, prefix="/agents", tags=["Autonomous Age
 api_router.include_router(audit.router, prefix="/audit", tags=["Audit & Compliance"])
 api_router.include_router(export.router, prefix="/export", tags=["Export & Data Portability"])
 api_router.include_router(diagnostics.router, prefix="/diagnostics", tags=["System Diagnostics"])
+api_router.include_router(artifacts.router, prefix="/artifacts", tags=["Generated Document & Visual Artifacts"])

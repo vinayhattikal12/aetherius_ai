@@ -8,6 +8,7 @@ class SourceCitation(BaseModel):
     title: str
     snippet: str
     url: Optional[str] = None
+    source_domain: Optional[str] = None
     page_number: Optional[int] = None
     chunk_index: Optional[int] = None
     similarity_score: Optional[float] = None

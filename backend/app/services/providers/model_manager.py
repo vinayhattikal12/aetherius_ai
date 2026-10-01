@@ -215,5 +215,13 @@ class ModelManager:
         ):
             yield token
 
+    async def delete_model(self, model_name: str) -> bool:
+        """Deletes model from local Ollama runtime and storage."""
+        return await self.ollama.delete_model(model_name)
+
+    async def pull_model(self, model_name: str) -> bool:
+        """Pulls model into local Ollama runtime."""
+        return await self.ollama.pull_model(model_name)
+
 
 model_manager = ModelManager()

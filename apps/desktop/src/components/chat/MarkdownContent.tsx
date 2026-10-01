@@ -1,14 +1,71 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Check, Copy, Download, Maximize2, RefreshCw, Image as ImageIcon } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  Download,
+  Maximize2,
+  RefreshCw,
+  Image as ImageIcon,
+  FileText,
+  FileSpreadsheet,
+  File,
+  Eye,
+  ExternalLink,
+  X,
+} from 'lucide-react';
+import { API_BASE_URL } from '../../services/api';
 
 interface MarkdownContentProps {
   content: string;
   onImageClick?: (url: string) => void;
 }
 
+interface DocumentPreviewModalState {
+  title: string;
+  previewUrl: string;
+  downloadUrl: string;
+  fileType: string;
+}
+
 export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, onImageClick }) => {
+  const [docPreview, setDocPreview] = useState<DocumentPreviewModalState | null>(null);
+
+  // Close modal on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && docPreview) {
+        setDocPreview(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [docPreview]);
+
+  const handleDownloadFile = async (url: string, filename: string) => {
+    const fullUrl = url.startsWith('http')
+      ? url
+      : `${API_BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+
+    try {
+      const response = await fetch(fullUrl);
+      if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename || 'document';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.warn('Direct blob download fallback to window.open:', err);
+      window.open(fullUrl, '_blank');
+    }
+  };
+
   return (
     <div className="prose-clean text-sm leading-relaxed text-white space-y-2.5 break-words">
       <ReactMarkdown
@@ -88,6 +145,132 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, onIma
           img: ({ src, alt }: any) => (
             <MarkdownImage src={src || ''} alt={alt || 'Visual Illustration'} onImageClick={onImageClick} />
           ),
+          a: ({ href, children }: any) => {
+            const linkHref = href || '';
+            const isArtifact =
+              linkHref.includes('/api/v1/artifacts/') ||
+              /\.(pdf|docx|xlsx|csv|zip)$/i.test(linkHref);
+
+            if (isArtifact) {
+              const filename =
+                typeof children === 'string'
+                  ? children
+                  : Array.isArray(children) && typeof children[0] === 'string'
+                  ? children[0]
+                  : 'Document';
+
+              const cleanFilename = filename.replace(/^📄\s*/, '').trim();
+              const ext = (cleanFilename.split('.').pop() || 'pdf').toLowerCase();
+              const isPdf = ext === 'pdf';
+              const isExcel = ext === 'xlsx' || ext === 'csv';
+              const isWord = ext === 'docx' || ext === 'doc';
+
+              // Derive preview URL
+              const previewUrl = linkHref.replace(/\/download\b/, '/preview');
+              const fullDownloadUrl = linkHref.startsWith('http')
+                ? linkHref
+                : `${API_BASE_URL}${linkHref.startsWith('/') ? '' : '/'}${linkHref}`;
+              const fullPreviewUrl = previewUrl.startsWith('http')
+                ? previewUrl
+                : `${API_BASE_URL}${previewUrl.startsWith('/') ? '' : '/'}${previewUrl}`;
+
+              return (
+                <div className="not-prose my-2.5 p-3 rounded-[12px] bg-[#171615] border border-[#2e2d2c] hover:border-[#016A71]/50 transition-all shadow-md group flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className={`p-2.5 rounded-[10px] border ${
+                        isPdf
+                          ? 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                          : isExcel
+                          ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                          : isWord
+                          ? 'bg-blue-500/10 border-blue-500/20 text-blue-400'
+                          : 'bg-[#016A71]/10 border-[#016A71]/20 text-[#34888D]'
+                      }`}
+                    >
+                      {isPdf ? (
+                        <FileText className="w-5 h-5" />
+                      ) : isExcel ? (
+                        <FileSpreadsheet className="w-5 h-5" />
+                      ) : isWord ? (
+                        <FileText className="w-5 h-5" />
+                      ) : (
+                        <File className="w-5 h-5" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-white truncate group-hover:text-[#34888D] transition-colors">
+                        {cleanFilename}
+                      </div>
+                      <div className="text-[11px] text-[#949494] flex items-center gap-2 mt-0.5">
+                        <span className="px-1.5 py-0.5 rounded bg-[#222120] text-[10px] uppercase font-mono font-medium text-zinc-300 border border-[#2e2d2c]">
+                          {ext.toUpperCase()}
+                        </span>
+                        <span>Compiled by Aetherius Engine</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {isPdf && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDocPreview({
+                            title: cleanFilename,
+                            previewUrl: fullPreviewUrl,
+                            downloadUrl: fullDownloadUrl,
+                            fileType: ext,
+                          });
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-[9px] bg-[#222120] hover:bg-[#2b2a28] text-zinc-200 hover:text-white text-xs font-medium border border-[#343332] transition-colors cursor-pointer"
+                        title="Preview document in viewer"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-[#34888D]" />
+                        <span>Preview</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleDownloadFile(fullDownloadUrl, cleanFilename);
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-[9px] bg-[#016A71] hover:bg-[#01575d] text-white text-xs font-medium transition-colors shadow-sm cursor-pointer"
+                      title="Download file to computer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            // External Links
+            const isExternal = /^https?:\/\//i.test(linkHref);
+            return (
+              <a
+                href={linkHref}
+                target={isExternal ? '_blank' : undefined}
+                rel={isExternal ? 'noopener noreferrer' : undefined}
+                onClick={(e) => {
+                  if (isExternal) {
+                    e.preventDefault();
+                    window.open(linkHref, '_blank', 'noopener,noreferrer');
+                  }
+                }}
+                className="text-[#34888D] hover:text-[#45a4a9] underline underline-offset-2 transition-colors inline-flex items-center gap-0.5"
+              >
+                <span>{children}</span>
+                {isExternal && <ExternalLink className="w-3 h-3 inline-block ml-0.5 opacity-70" />}
+              </a>
+            );
+          },
           code: ({ node, className, children, ...props }: any) => {
             const match = /language-(\w+)/.exec(className || '');
             const isInline = !match && !String(children).includes('\n');
@@ -110,6 +293,66 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, onIma
       >
         {content}
       </ReactMarkdown>
+
+      {/* Document Interactive Preview Modal */}
+      {docPreview && (
+        <div
+          onClick={() => setDocPreview(null)}
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4 cursor-pointer select-none animate-in fade-in duration-200"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-5xl h-[85vh] bg-[#121214] border border-[#2a2928] rounded-[16px] shadow-2xl flex flex-col overflow-hidden cursor-default"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 bg-[#171615] border-b border-[#2a2928] flex-shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <FileText className="w-5 h-5 text-[#34888D]" />
+                <span className="text-sm font-semibold text-white truncate">{docPreview.title}</span>
+                <span className="px-2 py-0.5 rounded bg-[#222120] text-[10px] uppercase font-mono font-medium text-zinc-300 border border-[#2e2d2c]">
+                  {docPreview.fileType.toUpperCase()}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleDownloadFile(docPreview.downloadUrl, docPreview.title)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-[8px] bg-[#016A71] hover:bg-[#01575d] text-white text-xs font-medium transition-colors shadow-sm"
+                  title="Download File"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </button>
+
+                <button
+                  onClick={() => window.open(docPreview.previewUrl, '_blank')}
+                  className="p-1.5 rounded-[8px] hover:bg-[#282725] text-[#949494] hover:text-white transition-colors"
+                  title="Open in new window"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </button>
+
+                <button
+                  onClick={() => setDocPreview(null)}
+                  className="p-1.5 rounded-[8px] hover:bg-[#282725] text-[#949494] hover:text-white transition-colors"
+                  title="Close preview"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body - PDF Iframe Viewer */}
+            <div className="flex-1 w-full h-full bg-[#1e1e20] p-2 overflow-hidden">
+              <iframe
+                src={`${docPreview.previewUrl}#toolbar=1`}
+                title={docPreview.title}
+                className="w-full h-full rounded-[10px] border border-white/5 bg-white"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

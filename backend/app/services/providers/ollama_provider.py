@@ -182,18 +182,41 @@ class OllamaProvider(BaseModelProvider):
 
     async def delete_model(self, model_name: str) -> bool:
         """Trigger model deletion in Ollama to free disk space."""
+        # Unload model from RAM first
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                res = await client.request(
-                    "DELETE",
-                    f"{self.base_url}/api/delete",
-                    json={"name": model_name}
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={"model": model_name, "keep_alive": 0}
                 )
-                self._last_tags_check = 0.0 # Invalidate cache
-                return res.status_code == 200
-        except Exception as e:
-            logger.error(f"Failed to delete model {model_name} via Ollama: {e}")
-            return False
+        except Exception:
+            pass
+
+        deleted = False
+        candidates = [model_name]
+        if ":" not in model_name:
+            candidates.append(f"{model_name}:latest")
+        if model_name.endswith(":latest"):
+            candidates.append(model_name.replace(":latest", ""))
+
+        for cand in candidates:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    res = await client.request(
+                        "DELETE",
+                        f"{self.base_url}/api/delete",
+                        json={"name": cand}
+                    )
+                    if res.status_code == 200:
+                        deleted = True
+                        break
+            except Exception as e:
+                logger.error(f"Failed to delete model {cand} via Ollama: {e}")
+
+        self._last_tags_check = 0.0  # Invalidate cache
+        self._cached_tags = []
+        self._model_info_cache.pop(model_name, None)
+        return deleted
 
     async def resolve_target_model(self, model_name: str, has_images: bool = False) -> str:
         """Resolve requested model to the best available locally installed Ollama chat tag."""
@@ -286,6 +309,8 @@ class OllamaProvider(BaseModelProvider):
                         "temperature": temperature,
                         "num_predict": max_tokens,
                         "num_ctx": num_ctx,
+                        "num_thread": self._cpu_threads,
+                        "repeat_penalty": 1.15,
                     }
                 }
             )
@@ -354,6 +379,8 @@ class OllamaProvider(BaseModelProvider):
                         "temperature": temperature,
                         "num_predict": max_tokens,
                         "num_ctx": num_ctx,
+                        "num_thread": self._cpu_threads,
+                        "repeat_penalty": 1.15,
                     }
                 }
             ) as response:

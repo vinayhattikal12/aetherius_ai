@@ -1,37 +1,78 @@
+import re
 import json
 import httpx
 from typing import Dict, Any, List, Optional
+from backend.app.services.embedding_service import EmbeddingService
 from backend.app.core.logging import logger
-
-
-# These signals do NOT require an LLM call - they are unambiguous by text alone
-_WEB_TRIGGERS = frozenset([
-    "today", "latest", "current", "news", "live", "now", "weather",
-    "stock", "price", "yesterday", "recent", "2024", "2025", "2026",
-    "trending", "just announced", "just released", "right now",
-    "who won", "what happened", "score", "sensex", "nifty"
-])
-_CODE_TRIGGERS = frozenset([
-    "write code", "write a", "code for", "function", "def ", "class ",
-    "import ", "debug", "error", "exception", "fix this", "refactor",
-    "implement", "algorithm", "script", "program", "sql query", "api endpoint"
-])
-_VISUAL_TRIGGERS = frozenset([
-    "draw", "paint", "sketch", "generate image", "create image",
-    "visualize", "illustrate", "render", "show me a picture", "make a diagram"
-])
 
 
 class LLMRouterService:
     """
-    Ultra-fast query intent classifier.
-    
-    Strategy:
-    - For MOST queries: instant sub-millisecond classification via keyword signals.
-      This fires BEFORE streaming so the right context is assembled.
-    - For AMBIGUOUS multi-turn queries: use async Ollama LLM router in parallel,
-      but do NOT block streaming on it (not yet implemented - placeholder).
+    Autonomous Semantic Intent, Entity, & Execution Router.
+    Combines sub-millisecond semantic centroid embeddings with high-signal structural NLP.
+    Scales to millions of users without fragile manual keyword lists.
     """
+
+    SEMANTIC_CENTROIDS = {
+        "temporal_realtime": (
+            "latest current today yesterday now breaking news updates live weather temperature "
+            "stock price quote market sports score match tournament winner election results "
+            "trending recently announced launched released 2024 2025 2026 upcoming schedule"
+        ),
+        "entity_roster_fact": (
+            "list of all chief ministers prime ministers presidents governors ministers ceos "
+            "heads of state government officials leaders roster table each state country capital "
+            "population gdp net worth biography founder company organization cabinet members rankings"
+        ),
+        "code_development": (
+            "write code create function implement class def python typescript javascript sql query "
+            "api endpoint unit test bug error exception debug refactor algorithm data structure"
+        ),
+        "visual_generation": (
+            "draw paint sketch generate image create picture visualize illustrate render diagram flowchart schematic"
+        ),
+        "casual_greeting": (
+            "hello hi hey good morning good evening how are you who are you what can you do help ping thank you"
+        )
+    }
+
+    _centroid_vectors = {
+        k: EmbeddingService._generate_semantic_vector(v)
+        for k, v in SEMANTIC_CENTROIDS.items()
+    }
+
+    # High-signal structural patterns
+    ROSTER_PATTERNS = [
+        r"\b(?:list\s+of|names\s+of|all\s+the|table\s+of|roster\s+of|who\s+are\s+the)\b",
+        r"\b(?:for\s+each|for\s+every|in\s+each|in\s+every)\s+(?:state|country|nation|department|district|city)\b",
+        r"\b(?:all\s+states|all\s+countries|all\s+ministers|all\s+chief\s+ministers|all\s+presidents|all\s+governors)\b",
+        r"\b(?:cm'?s?|pm'?s?|chief\s+ministers?|prime\s+ministers?|governors?)\s+of\b",
+    ]
+
+    FACTUAL_ENTITY_PATTERNS = [
+        r"\b(?:who\s+is|who\s+was|who\s+are|who\s+won|what\s+is\s+the\s+capital|what\s+is\s+the\s+gdp|what\s+is\s+the\s+population|what\s+is\s+the\s+price|how\s+much\s+is|tell\s+me\s+about)\b",
+        r"\b(?:chief\s+minister|prime\s+minister|president|governor|ceo|founder|chancellor|mayor|cabinet\s+minister|company|organization|startup|firm|enterprise)\b",
+        r"\b(?:stock\s+price|market\s+cap|weather\s+in|temperature\s+in|latest\s+news|breaking\s+news)\b",
+    ]
+
+    CODE_PATTERNS = [
+        r"\b(?:write|create|implement|generate|build)\s+(?:a\s+|an\s+)?(?:[a-zA-Z0-9_\-\s]{0,25})?\b(?:function|script|class|module|endpoint|query|algorithm|code|decorator|generator|interface)\b",
+        r"\b(?:write\s+code|code\s+for|def\s+[a-zA-Z_]|class\s+[a-zA-Z_]|import\s+[a-zA-Z_]|fix\s+this\s+bug|syntax\s+error|refactor\s+this)\b",
+        r"```[a-zA-Z]*",
+    ]
+
+    VISUAL_PATTERNS = [
+        r"\b(?:draw|paint|sketch|generate\s+an?\s+image|create\s+an?\s+image|visualize|make\s+a\s+diagram|render\s+a\s+picture)\b",
+    ]
+
+    HISTORICAL_SCOPE_PATTERNS = [
+        r"\b(?:from\s+independence|since\s+1947|since\s+1950|till\s+now|to\s+date|from\s+the\s+beginning|all\s+past\s+and\s+present|throughout\s+history|entire\s+history|since\s+inception|all\s+time|all\s+former)\b",
+    ]
+
+    MULTI_ENTITY_PATTERNS = [
+        r"\b(?:each\s+state|every\s+state|all\s+states|each\s+country|every\s+country|all\s+countries|all\s+nations|each\s+nation)\b",
+        r"\b(?:for\s+each|for\s+every|in\s+each|in\s+every)\s+(?:state|country|nation|territory|district)\b",
+    ]
 
     @classmethod
     async def analyze_intent_and_entities(
@@ -41,46 +82,60 @@ class LLMRouterService:
         ollama_url: str = "http://127.0.0.1:11434"
     ) -> Dict[str, Any]:
         """
-        Returns intent classification as fast as possible.
-        For simple queries: returns instantly using text signals (0ms).
-        For complex anaphoric follow-ups: calls a local LLM with a strict timeout.
+        Sub-millisecond autonomous intent analysis.
+        Extracts execution requirements, routing signals, and search triggers.
         """
-        q_lower = query.lower().strip()
+        q_clean = query.strip()
+        q_lower = q_clean.lower()
         q_words = set(q_lower.split())
 
-        # --- Instant classification (0ms) ---
-        requires_web = bool(_WEB_TRIGGERS & q_words) or any(t in q_lower for t in _WEB_TRIGGERS)
-        is_visual = any(t in q_lower for t in _VISUAL_TRIGGERS)
-        is_code = any(t in q_lower for t in _CODE_TRIGGERS)
+        # 1. Structural NLP Pattern Matching
+        is_roster = any(re.search(pat, q_lower) for pat in cls.ROSTER_PATTERNS)
+        is_factual_entity = any(re.search(pat, q_lower) for pat in cls.FACTUAL_ENTITY_PATTERNS)
+        is_code = any(re.search(pat, q_lower) for pat in cls.CODE_PATTERNS)
+        is_visual = any(re.search(pat, q_lower) for pat in cls.VISUAL_PATTERNS)
+        has_hist = any(re.search(pat, q_lower) for pat in cls.HISTORICAL_SCOPE_PATTERNS)
+        has_multi = any(re.search(pat, q_lower) for pat in cls.MULTI_ENTITY_PATTERNS)
+        is_massive_scope = bool(has_hist and has_multi)
 
-        # --- Turn type: check if query has an anaphoric pronoun referencing history ---
+        is_casual = (
+            q_lower in ["hi", "hello", "hey", "good morning", "good evening", "how are you", "who are you", "what can you do", "ping"]
+            or (len(q_words) <= 2 and q_words.issubset({"hi", "hello", "hey", "aetherius", "help"}))
+        )
+
+        # 2. Dense Semantic Centroid Scoring (0ms)
+        q_vec = EmbeddingService._generate_semantic_vector(q_clean)
+        sim_temporal = EmbeddingService.cosine_similarity(q_vec, cls._centroid_vectors["temporal_realtime"])
+        sim_roster = EmbeddingService.cosine_similarity(q_vec, cls._centroid_vectors["entity_roster_fact"])
+        sim_code = EmbeddingService.cosine_similarity(q_vec, cls._centroid_vectors["code_development"])
+        sim_visual = EmbeddingService.cosine_similarity(q_vec, cls._centroid_vectors["visual_generation"])
+
+        # 3. Autonomous Web Search Decision Logic
+        requires_web = False
+        if not is_casual and not (is_code and sim_code > 0.45):
+            if is_roster or is_factual_entity or is_massive_scope:
+                requires_web = True
+            elif sim_temporal > 0.22 or sim_roster > 0.25:
+                requires_web = True
+            elif any(k in q_words for k in {"news", "today", "latest", "current", "recently", "recent", "launched", "release", "released", "update", "updates", "weather", "stock", "price", "2024", "2025", "2026", "score", "scores", "won", "yesterday"}):
+                requires_web = True
+
+        # 4. Turn Type & Anaphora Resolution
         anaphora_words = {"it", "this", "that", "they", "them", "its", "their", "he", "she", "the same"}
         has_anaphora = bool(anaphora_words & q_words) and len(history) > 0
-        is_follow_up = has_anaphora or (len(q_lower.split()) <= 4 and len(history) > 0)
+        is_follow_up = has_anaphora or (len(q_words) <= 4 and len(history) > 0)
         turn_type = "FOLLOW_UP" if is_follow_up else "NEW_TOPIC"
 
-        # --- Canonical query: resolve pronouns if short follow-up ---
         canonical = query
-        if is_follow_up and history:
-            # Get last assistant turn to resolve pronouns
-            last_assistant = next((m["content"][:60] for m in reversed(history) if m["role"] == "assistant"), None)
-            last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), query)
-            if has_anaphora and last_user and last_user != query:
-                canonical = query  # We'll resolve it contextually via history in context engine
-            # Use previous topic as active topic context
-            active_topic = last_user[:30] if last_user else query[:30]
-        else:
-            active_topic = query[:40]
+        active_topic = query[:40]
 
-        # --- For complex anaphoric queries, try LLM router with SHORT timeout ---
-        # Only call if query is short + has pronouns (genuinely ambiguous)
-        if has_anaphora and len(q_lower.split()) <= 6 and len(history) > 0:
-            try:
-                result = await cls._call_llm_router(query, history, ollama_url)
-                if result:
-                    return result
-            except Exception:
-                pass  # Fall through to instant result
+        if is_follow_up and history:
+            last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), query)
+            active_topic = last_user[:35] if last_user else query[:35]
+
+            # If short pronoun query, synthesize canonical search query
+            if has_anaphora and len(q_words) <= 6:
+                canonical = f"{active_topic} {query}"
 
         return {
             "turn_type": turn_type,
@@ -88,46 +143,13 @@ class LLMRouterService:
             "canonical_query": canonical,
             "extracted_entities": [],
             "requires_web_search": requires_web,
-            "is_visual_request": is_visual,
-            "is_code_request": is_code,
+            "is_roster_request": is_roster,
+            "is_massive_scope": is_massive_scope,
+            "is_visual_request": is_visual or (sim_visual > 0.40),
+            "is_code_request": is_code or (sim_code > 0.38 and not requires_web),
+            "semantic_scores": {
+                "temporal": round(sim_temporal, 3),
+                "roster": round(sim_roster, 3),
+                "code": round(sim_code, 3),
+            }
         }
-
-    @classmethod
-    async def _call_llm_router(
-        cls,
-        query: str,
-        history: List[Dict[str, str]],
-        ollama_url: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Calls Ollama LLM for anaphora resolution. Only used for genuinely ambiguous short follow-ups.
-        Hard timeout: 3 seconds. If LLM is slow or busy, we skip it and use instant defaults.
-        """
-        history_text = "\n".join([f"{m['role']}: {m['content'][:100]}" for m in history[-3:]])
-        system_prompt = (
-            'You are a minimal NLP classifier. Return ONLY valid JSON, no explanation:\n'
-            '{"turn_type":"FOLLOW_UP","active_topic":"short topic","canonical_query":"standalone query","extracted_entities":[],'
-            '"requires_web_search":false,"is_visual_request":false,"is_code_request":false}'
-        )
-        prompt = f"History:\n{history_text}\n\nQuery: {query}"
-
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
-                res = await client.post(
-                    f"{ollama_url}/api/generate",
-                    json={
-                        "model": "qwen2.5-coder:1.5b",
-                        "system": system_prompt,
-                        "prompt": prompt,
-                        "format": "json",
-                        "stream": False,
-                        "options": {"temperature": 0.0, "num_predict": 100}
-                    }
-                )
-                if res.status_code == 200:
-                    text = res.json().get("response", "{}")
-                    return json.loads(text)
-        except Exception as e:
-            logger.debug(f"LLM router skipped (timeout/error): {e}")
-        return None
-

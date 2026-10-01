@@ -28,6 +28,7 @@ class ContextualQueryAnalysis(BaseModel):
     is_reasoning: bool = False
     is_search: bool = False
     is_fast: bool = False
+    is_massive_scope: bool = False
     visual_prompt: Optional[str] = None
     complexity: float = 0.3
     primary_intent: str = "general_question"
@@ -44,6 +45,10 @@ class QueryIntelligenceService:
     """
 
     NORMALIZATION_MAP = {
+        "cm": "Chief Minister",
+        "pm": "Prime Minister",
+        "cji": "Chief Justice of India",
+        "potus": "President of the United States",
         "expalin": "explain",
         "strret": "street",
         "stret": "street",
@@ -220,11 +225,18 @@ class QueryIntelligenceService:
         is_search = router_result.get("requires_web_search", False)
         is_visual = router_result.get("is_visual_request", False)
         is_code = router_result.get("is_code_request", False)
+        is_massive_scope = router_result.get("is_massive_scope", False)
         
-        # Keep empty constraints/references for now as they are not heavily used
+        # Extract accumulated constraints and references across conversation history and current message
+        from backend.app.services.conversation_state_service import ConversationStateService
         constraints = {}
-        references = {}
-        resolved_entities = []
+        for msg in history:
+            if msg.get("role") == "user":
+                constraints.update(ConversationStateService.extract_constraints(msg.get("content", "")))
+        constraints.update(ConversationStateService.extract_constraints(user_message))
+
+        references = router_result.get("resolved_references", {})
+        resolved_entities = extracted_entities
         is_reasoning = False
         is_fast = False
         is_volatile = is_search
@@ -243,6 +255,12 @@ class QueryIntelligenceService:
             composite.append("visual_generation")
         if is_search:
             composite.append("web_search")
+        if any(k in lower_c for k in ["what is", "what are", "define", "definition", "meaning of", "explain"]):
+            composite.append("definition")
+        if any(k in lower_c for k in ["compare", "comparison", "difference", "differences", "versus", "vs."]):
+            composite.append("comparison")
+        if any(k in lower_c for k in ["tell me about", "who is", "about "]) or extracted_entities:
+            composite.append("entity_overview")
             
         if not composite:
             composite.append("general_question")
@@ -310,6 +328,7 @@ class QueryIntelligenceService:
             is_reasoning=is_reasoning,
             is_search=is_search,
             is_fast=is_fast,
+            is_massive_scope=is_massive_scope,
             visual_prompt=visual_prompt,
             complexity=complexity,
             primary_intent=primary,

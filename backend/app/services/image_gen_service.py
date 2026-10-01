@@ -107,6 +107,9 @@ class ImageGenService:
         Generate image using a strictly local diffusion provider (e.g., ComfyUI).
         Enforces LOCAL_ONLY boundaries and avoids fake generated placeholders or cloud leaks.
         """
+        if getattr(settings, "LOCAL_ONLY", False):
+            raise RuntimeError("Image generation is disabled in LOCAL_ONLY mode without a local diffusion engine configured.")
+
         comfy_url = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
         
         # We enforce local generation for privacy. 

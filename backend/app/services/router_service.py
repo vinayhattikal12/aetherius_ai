@@ -109,7 +109,7 @@ class ModelRouter:
             is_coding = request.requires_coding or q_analysis.is_code
             is_reasoning = request.requires_reasoning or q_analysis.is_reasoning
             is_fast = q_analysis.is_fast
-            detected_intent = q_analysis.primary_intent
+            detected_intent = "code_generation" if is_coding else q_analysis.primary_intent
             complexity = q_analysis.complexity
 
         # Set descriptive routing badge preserving true intent

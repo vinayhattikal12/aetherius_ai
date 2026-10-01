@@ -35,7 +35,7 @@ import {
   ModelInstallProgress,
 } from '../types';
 
-const API_BASE_URL = 'http://127.0.0.1:8000';
+export const API_BASE_URL = 'http://127.0.0.1:8000';
 
 class ApiService {
   private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {

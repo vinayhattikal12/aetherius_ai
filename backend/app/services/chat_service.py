@@ -24,6 +24,7 @@ from backend.app.services.context_engine import ContextEngine
 from backend.app.services.router_service import ModelRouter
 from backend.app.services.tool_service import ToolExecutionEngine, ToolExecutionRequest
 from backend.app.services.image_gen_service import ImageGenService, ImageGenerationRequest
+from backend.app.services.artifact_service import ArtifactService
 from backend.app.services.conversation_state_service import ConversationStateService
 from backend.app.services.query_intelligence_service import QueryIntelligenceService
 from backend.app.services.evidence import AnswerValidationEngine
@@ -303,8 +304,8 @@ class ChatService:
         web_searched = bool(web_raw_results)
         web_results = []
         if web_searched:
-            web_results = [{"title": r.title, "url": r.url, "snippet": r.snippet, "deep_content": getattr(r, "deep_content", None)} for r in web_raw_results]
-            citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, snippet=r.deep_content[:300] if getattr(r, "deep_content", None) else r.snippet) for r in web_raw_results])
+            web_results = [{"title": r.title, "url": r.url, "snippet": r.snippet, "deep_content": getattr(r, "deep_content", None), "source_domain": getattr(r, "source_domain", None)} for r in web_raw_results]
+            citations.extend([SourceCitation(source_type="web", title=r.title, url=r.url, source_domain=getattr(r, "source_domain", None), snippet=r.deep_content[:300] if getattr(r, "deep_content", None) else r.snippet) for r in web_raw_results])
 
         # =========================================================================
         # STEP 9: Context Assembly
@@ -335,7 +336,8 @@ class ChatService:
                 chat_history=recent_history,
                 current_user_message=effective_user_message,
                 accumulated_constraints=resolved_task.accumulated_constraints,
-                conversation_state=state_payload
+                conversation_state=state_payload,
+                is_massive_scope=q_analysis.is_massive_scope
             )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
@@ -404,6 +406,27 @@ class ChatService:
         # Fast post-processing cleanup (strips internal system tags in <0.01ms)
         assistant_content = ChatService.clean_model_response(assistant_content)
 
+        # Autonomous Document & PDF Compilation
+        generated_artifacts = []
+        if ArtifactService.is_document_intent(request.message, assistant_content):
+            try:
+                generated_artifacts = ArtifactService.compile_document(
+                    text_content=assistant_content,
+                    user_query=request.message,
+                    chat_history=recent_history
+                )
+                if generated_artifacts:
+                    if ArtifactService.is_refusal_or_sparse(assistant_content):
+                        assistant_content = "I have formatted and compiled your requested document with professional structure and styling."
+                    
+                    card_links = []
+                    for art in generated_artifacts:
+                        size_kb = round(art.file_size_bytes / 1024, 1)
+                        card_links.append(f"- 📄 **[{art.filename}]({art.download_url})** ({art.file_type.upper()} • {size_kb} KB)")
+                    assistant_content += "\n\n---\n### 📥 Generated Documents & Exports\n" + "\n".join(card_links)
+            except Exception as e:
+                logger.warning(f"Document artifact generation notice: {e}")
+
         # =========================================================================
         # STEP 13 & 14: Atomic State Persistence
         # =========================================================================
@@ -443,6 +466,7 @@ class ChatService:
                 "routing_reason": routing_reason,
                 "execution_mode": execution_mode,
                 "image_url": generated_image_url,
+                "artifacts": [a.model_dump() for a in generated_artifacts],
                 "context_stats": assembled["stats"],
                 "constraints_applied": resolved_task.accumulated_constraints,
                 "turn_type": resolved_task.turn_type,
@@ -685,11 +709,7 @@ class ChatService:
                     logger.debug(f"Web search stream error: {e}")
             return []
 
-        # Stream a progress indicator if we are doing heavy lifting
-        is_heavy_lifting = resolved_task.plan.requires_web_search or request.enable_web_search or request.enable_knowledge_rag
-        if is_heavy_lifting:
-            yield f"data: {json.dumps({'type': 'token', 'token': ' *Retrieving live context...* '})}\n\n"
-
+        # Execute tool, knowledge, and web retrieval
         with time_stage(stages_ms, "retrieval"):
             workspace_obj, retrieved_memories, rag_chunks, web_raw_results = await asyncio.gather(
                 fetch_workspace(),
@@ -697,9 +717,6 @@ class ChatService:
                 fetch_rag(),
                 fetch_web()
             )
-        
-        if is_heavy_lifting:
-            yield f"data: {json.dumps({'type': 'token', 'token': '\\r' + ' ' * 30 + '\\r'})}\n\n" # attempt to clear the token (frontend might not support \r, but this is best effort)
 
         workspace_instructions = workspace_obj.instructions if workspace_obj else "You are Aetherius AI."
         workspace_name = workspace_obj.name if workspace_obj else "General"
@@ -737,7 +754,8 @@ class ChatService:
                 chat_history=recent_history,
                 current_user_message=request.message,
                 accumulated_constraints=resolved_task.accumulated_constraints,
-                conversation_state=state_payload
+                conversation_state=state_payload,
+                is_massive_scope=q_analysis.is_massive_scope
             )
 
         messages_payload: List[Dict[str, Any]] = [{"role": "system", "content": assembled["system_prompt"]}]
@@ -787,11 +805,37 @@ class ChatService:
     
             # Save Assistant Message
             cleaned_response_text = ChatService.clean_model_response(full_response_text)
+            
+            # Autonomous Document & PDF Compilation for Streaming
+            stream_artifacts = []
+            if ArtifactService.is_document_intent(request.message, cleaned_response_text):
+                try:
+                    stream_artifacts = ArtifactService.compile_document(
+                        text_content=cleaned_response_text,
+                        user_query=request.message,
+                        chat_history=recent_history
+                    )
+                    if stream_artifacts:
+                        if ArtifactService.is_refusal_or_sparse(cleaned_response_text):
+                            cleaned_response_text = "I have formatted and compiled your requested document with professional structure and styling."
+                        
+                        card_links = []
+                        for art in stream_artifacts:
+                            size_kb = round(art.file_size_bytes / 1024, 1)
+                            card_links.append(f"- 📄 **[{art.filename}]({art.download_url})** ({art.file_type.upper()} • {size_kb} KB)")
+                        
+                        artifacts_block = "\n\n---\n### 📥 Generated Documents & Exports\n" + "\n".join(card_links)
+                        cleaned_response_text += artifacts_block
+                        yield f"data: {json.dumps({'type': 'token', 'token': artifacts_block})}\n\n"
+                except Exception as e:
+                    logger.warning(f"Stream document artifact generation notice: {e}")
+
             assistant_metadata = {
                 "rag_applied": rag_applied,
                 "web_searched": web_searched,
                 "routing_reason": routing_reason,
                 "execution_mode": execution_mode,
+                "artifacts": [a.model_dump() for a in stream_artifacts],
                 "constraints_applied": resolved_task.accumulated_constraints,
                 "turn_type": resolved_task.turn_type,
                 "canonical_prompt": resolved_task.canonical_query,

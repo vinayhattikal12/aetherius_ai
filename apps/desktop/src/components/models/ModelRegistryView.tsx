@@ -37,6 +37,7 @@ import {
   Eye,
   EyeOff,
   Save,
+  Loader2,
 } from 'lucide-react';
 
 interface ModelRegistryViewProps {
@@ -71,6 +72,7 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
   const [isSyncingDaily, setIsSyncingDaily] = useState<boolean>(false);
   const [lastSyncedTime, setLastSyncedTime] = useState<string>('Today (Live)');
   const [deleteTargetModel, setDeleteTargetModel] = useState<ModelResponse | null>(null);
+  const [isUninstalling, setIsUninstalling] = useState<boolean>(false);
   const [isSwapping, setIsSwapping] = useState<string | null>(null);
   const [installingPkgId, setInstallingPkgId] = useState<string | null>(null);
 
@@ -430,7 +432,8 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
   };
 
   const handleConfirmUninstall = async () => {
-    if (!deleteTargetModel) return;
+    if (!deleteTargetModel || isUninstalling) return;
+    setIsUninstalling(true);
     try {
       if (onUninstall) {
         await onUninstall(deleteTargetModel.id);
@@ -440,7 +443,10 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
       if (onReloadModels) {
         await onReloadModels();
       }
+    } catch (err) {
+      console.error('Failed to uninstall model:', err);
     } finally {
+      setIsUninstalling(false);
       setDeleteTargetModel(null);
     }
   };
@@ -1404,15 +1410,18 @@ export const ModelRegistryView: React.FC<ModelRegistryViewProps> = ({
             <div className="flex justify-end space-x-2.5 pt-2">
               <button
                 onClick={() => setDeleteTargetModel(null)}
-                className="px-4 py-2 rounded-[11px] text-xs font-medium bg-[#222120] hover:bg-[#2c2b2a] text-[#949494] hover:text-white transition-colors border border-[#2a2928]"
+                disabled={isUninstalling}
+                className="px-4 py-2 rounded-[11px] text-xs font-medium bg-[#222120] hover:bg-[#2c2b2a] text-[#949494] hover:text-white transition-colors border border-[#2a2928] disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleConfirmUninstall}
-                className="px-4 py-2 rounded-[11px] text-xs font-semibold bg-rose-700 hover:bg-rose-600 text-white transition-all flex items-center space-x-1.5 shadow-lg shadow-rose-950/40"
+                disabled={isUninstalling}
+                className="px-4 py-2 rounded-[11px] text-xs font-semibold bg-rose-700 hover:bg-rose-600 text-white transition-all flex items-center space-x-1.5 shadow-lg shadow-rose-950/40 disabled:opacity-50 cursor-pointer"
               >
-                <span>Yes, Uninstall</span>
+                {isUninstalling && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isUninstalling ? 'Uninstalling...' : 'Yes, Uninstall'}</span>
               </button>
             </div>
           </div>
