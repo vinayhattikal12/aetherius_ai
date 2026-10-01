@@ -160,7 +160,7 @@ class QueryIntelligenceService:
         lower = query.lower()
         if any(k in lower for k in ["stock", "market", "ticker", "mover", "finance", "compound interest", "growth rate", "revenue", "financials", "small cap"]):
             return "finance"
-        if any(k in lower for k in ["python", "rust", "typescript", "javascript", "code", "sql", "api", "function", "class", "debug", "endpoint", "database"]):
+        if any(k in lower for k in ["python", "rust", "typescript", "javascript", "code", "sql", "api", "function", "class", "debug", "endpoint", "database", "recursion", "algorithm", "computer science", "data structure"]):
             return "programming"
         if any(k in lower for k in ["model", "llm", "qwen", "llama", "deepseek", "gpt", "claude", "gemini", "neural", "transformer", "artificial intelligence", "ai"]):
             return "artificial_intelligence"

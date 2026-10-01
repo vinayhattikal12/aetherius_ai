@@ -4,11 +4,20 @@ from pydantic import BaseModel
 from backend.app.core.logging import logger
 
 
+class ClaimEvaluation(BaseModel):
+    claim_text: str
+    verdict: str  # "SUPPORTED", "UNSUPPORTED", "CONTRADICTED", "UNCERTAIN"
+    confidence: float
+    matched_evidence_snippet: Optional[str] = None
+
+
 class ValidationReport(BaseModel):
     is_valid: bool
     grounding_score: float
     constraints_satisfied: bool
     citations_valid: bool
+    claims_evaluated: List[ClaimEvaluation] = []
+    unsupported_claims_count: int = 0
     issues: List[str] = []
     warnings: List[str] = []
     repair_instruction: Optional[str] = None
@@ -16,9 +25,75 @@ class ValidationReport(BaseModel):
 
 class AnswerValidationEngine:
     """
-    Production-grade Pre-Generation Answer Validation, Anti-Hallucination Guardrails,
-    and Automated Response Repair Engine.
+    Production-grade Pre-Generation Answer Validation, Claim-Level Factual Verification,
+    Anti-Hallucination Guardrails, and Automated Response Repair Engine.
     """
+
+    @classmethod
+    def extract_claims(cls, text: str) -> List[str]:
+        """Extracts discrete factual assertions, numerical claims, dates, and entity assignments."""
+        if not text:
+            return []
+
+        # Remove code blocks, markdown tables, and headers to focus on prose assertions
+        cleaned = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+        cleaned = re.sub(r"\|.*?\|", "", cleaned)
+        cleaned = re.sub(r"^#+\s+.*$", "", cleaned, flags=re.MULTILINE)
+
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
+        claims = []
+        for s in sentences:
+            s_clean = s.strip()
+            if len(s_clean) < 15 or len(s_clean) > 280:
+                continue
+            # Look for factual indicators (verbs, numbers, dates, named roles)
+            if re.search(r"(\b\d{2,4}\b|\b\d+(\.\d+)?%?\b|is the|was the|served as|released in|founded in|launched in|headquartered in|won the|score was)", s_clean, flags=re.IGNORECASE):
+                claims.append(s_clean)
+
+        return claims[:8]  # Bound to top 8 prominent claims for fast sub-millisecond evaluation
+
+    @classmethod
+    def evaluate_claims(cls, claims: List[str], evidence_chunks: List[str]) -> Tuple[List[ClaimEvaluation], List[str]]:
+        """Evaluates extracted claims against retrieved evidence chunks."""
+        if not claims or not evidence_chunks:
+            return [], []
+
+        evidence_text = " ".join(evidence_chunks).lower()
+        evaluations: List[ClaimEvaluation] = []
+        issues: List[str] = []
+
+        stop_words = {"the", "a", "an", "is", "was", "are", "were", "and", "or", "in", "on", "at", "to", "for", "with", "by", "that", "this"}
+
+        for claim in claims:
+            c_words = [w for w in re.findall(r"\b[a-zA-Z0-9_\-]{3,}\b", claim.lower()) if w not in stop_words]
+            if not c_words:
+                continue
+
+            matches = [w for w in c_words if w in evidence_text]
+            match_ratio = len(matches) / len(c_words)
+
+            # Check specific numbers/dates in claim
+            numbers_in_claim = re.findall(r"\b\d{2,4}\b", claim)
+            numbers_matched = all(n in evidence_text for n in numbers_in_claim) if numbers_in_claim else True
+
+            if match_ratio >= 0.65 and numbers_matched:
+                verdict = "SUPPORTED"
+                conf = round(min(1.0, match_ratio), 2)
+            elif match_ratio >= 0.35:
+                verdict = "UNCERTAIN"
+                conf = 0.5
+            else:
+                verdict = "UNSUPPORTED"
+                conf = 0.2
+                issues.append(f"Claim unsupported by verified evidence: '{claim[:100]}...'")
+
+            evaluations.append(ClaimEvaluation(
+                claim_text=claim,
+                verdict=verdict,
+                confidence=conf
+            ))
+
+        return evaluations, issues
 
     @classmethod
     def validate_constraints(
@@ -93,7 +168,6 @@ class AnswerValidationEngine:
         if not response_words:
             return 1.0
 
-        # Stop words removal for factual grounding evaluation
         stop_words = {
             "this", "that", "these", "those", "have", "with", "from", "which", "will", "would",
             "could", "should", "there", "their", "about", "using", "into", "more", "other"
@@ -105,7 +179,6 @@ class AnswerValidationEngine:
         matches = sum(1 for w in factual_words if w in evidence_text)
         overlap_ratio = matches / len(factual_words)
 
-        # Scale to calibrated grounding confidence score (0.0 - 1.0)
         return round(min(1.0, max(0.2, overlap_ratio * 1.5)), 2)
 
     @classmethod
@@ -136,7 +209,7 @@ class AnswerValidationEngine:
         available_sources: Optional[List[Dict[str, Any]]] = None,
         evidence_chunks: Optional[List[str]] = None
     ) -> ValidationReport:
-        """Performs full pre-flight audit on synthesized response."""
+        """Performs full pre-flight audit and claim-level verification on synthesized response."""
         active_constraints = constraints or {}
         sources = available_sources or []
         chunks = evidence_chunks or []
@@ -146,7 +219,11 @@ class AnswerValidationEngine:
         leak_ok, leak_issues = cls.validate_leakage(response_text)
         grounding = cls.calculate_grounding_score(response_text, chunks)
 
-        all_issues = c_issues + cit_issues + leak_issues
+        # Claim-level validation if external evidence was provided
+        claims = cls.extract_claims(response_text) if chunks else []
+        claim_evals, claim_issues = cls.evaluate_claims(claims, chunks) if chunks and len(chunks) > 0 else ([], [])
+
+        all_issues = c_issues + cit_issues + leak_issues + (claim_issues if grounding < 0.40 else [])
         is_valid = len(all_issues) == 0
 
         repair_instruction = None
@@ -155,7 +232,7 @@ class AnswerValidationEngine:
                 "CRITICAL CORRECTION REQUIRED:\n"
                 "Your previous response failed validation with the following issues:\n"
                 + "\n".join(f"- {issue}" for issue in all_issues)
-                + "\nPlease regenerate the response strictly fixing these violations while preserving accuracy."
+                + "\nPlease regenerate the response strictly fixing these violations while preserving factual accuracy."
             )
 
         return ValidationReport(
@@ -163,6 +240,8 @@ class AnswerValidationEngine:
             grounding_score=grounding,
             constraints_satisfied=c_ok,
             citations_valid=cit_ok,
+            claims_evaluated=claim_evals,
+            unsupported_claims_count=sum(1 for c in claim_evals if c.verdict == "UNSUPPORTED"),
             issues=all_issues,
             warnings=[],
             repair_instruction=repair_instruction

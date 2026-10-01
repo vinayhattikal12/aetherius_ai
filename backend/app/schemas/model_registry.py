@@ -3,6 +3,46 @@ from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 
 
+class ModelCapabilities(BaseModel):
+    chat: bool = True
+    reasoning: bool = True
+    coding: bool = False
+    vision: bool = False
+    tool_calling: bool = False
+    structured_output: bool = True
+    long_context: bool = False
+
+
+class ModelQualityProfile(BaseModel):
+    reasoning: str = "medium"
+    coding: str = "medium"
+    instruction_following: str = "high"
+    factuality: str = "high"
+
+
+class ModelHardwareRequirements(BaseModel):
+    ram: str = "4GB"
+    vram: str = "0GB"
+    gpu: str = "Optional"
+    storage: str = "4GB"
+
+
+class ModelDescriptor(BaseModel):
+    """Normalized model descriptor representation for all local and cloud models."""
+    model_id: str
+    provider: str
+    provider_model_id: str
+    runtime: str = "ollama"  # "ollama", "cloud", "openai", "anthropic", "google", "groq"
+    type: str = "local"      # "local", "cloud"
+    architecture: str = "transformer"
+    parameters: str = "3B"
+    quantization: str = "Q4_K_M"
+    context_length: int = 4096
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    quality_profile: ModelQualityProfile = Field(default_factory=ModelQualityProfile)
+    hardware_requirements: ModelHardwareRequirements = Field(default_factory=ModelHardwareRequirements)
+
+
 class ModelBase(BaseModel):
     name: str
     display_name: str
@@ -24,6 +64,7 @@ class ModelBase(BaseModel):
     category: str = "General"
     description: Optional[str] = None
     is_local: bool = True
+    descriptor: Optional[ModelDescriptor] = None
     extra_metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -33,12 +74,12 @@ class ModelCreate(ModelBase):
 
 class CompatibilityResult(BaseModel):
     model_name: str
-    compatibility: str # "Compatible", "Maybe Compatible", "Not Recommended"
+    compatibility: str # "SUPPORTED", "POSSIBLE", "NOT_RECOMMENDED", "INCOMPATIBLE", "UNKNOWN"
     score: int # 0 to 100
     estimated_memory_gb: float
     recommended_quantization: str
-    recommended_execution: str # "Local (GPU)", "Local (CPU/RAM)", "Cloud", "Hybrid"
-    performance_tier: str # "Fast / Fluid", "Moderate / Usable", "Slow / Heavy", "Not Viable"
+    recommended_execution: str # "Local (GPU)", "Local (CPU/RAM)", "Cloud", "Hybrid", "UNKNOWN"
+    performance_tier: str # "Fast / Fluid", "Moderate / Usable", "Slow / Heavy", "Not Viable", "UNKNOWN"
     reasons: List[str] = Field(default_factory=list)
 
 

@@ -36,7 +36,7 @@ class ModelCompatibilityEngine:
         return round(total_gb, 2)
 
     @classmethod
-    def evaluate(cls, profile: HardwareProfile, model: ModelBase | Dict[str, Any]) -> CompatibilityResult:
+    def evaluate(cls, profile: Optional[HardwareProfile], model: ModelBase | Dict[str, Any]) -> CompatibilityResult:
         if isinstance(model, dict):
             name = model.get("name", "Unknown")
             is_local = model.get("is_local", True)
@@ -58,7 +58,7 @@ class ModelCompatibilityEngine:
         if not is_local or params_b == 0:
             return CompatibilityResult(
                 model_name=name,
-                compatibility="Compatible",
+                compatibility="SUPPORTED",
                 score=100,
                 estimated_memory_gb=0.1,
                 recommended_quantization="API / Cloud Hosted",
@@ -67,12 +67,25 @@ class ModelCompatibilityEngine:
                 reasons=["Cloud API model executes remotely; requires negligible local memory."]
             )
 
-        # 2. Local model evaluation
+        # 2. Check if hardware is unknown or missing
+        if not profile or (profile.ram_gb <= 0 and (not profile.ram or profile.ram.total_gb <= 0)):
+            return CompatibilityResult(
+                model_name=name,
+                compatibility="UNKNOWN",
+                score=0,
+                estimated_memory_gb=cls.estimate_model_memory_gb(params_b, quantization, context_size),
+                recommended_quantization=quantization,
+                recommended_execution="UNKNOWN",
+                performance_tier="UNKNOWN",
+                reasons=["I need your hardware details before determining compatibility."]
+            )
+
+        # 3. Local model evaluation
         estimated_mem = cls.estimate_model_memory_gb(params_b, quantization, context_size)
-        total_ram = profile.ram.total_gb if profile.ram else profile.ram_gb
-        avail_ram = profile.ram.available_gb if profile.ram else total_ram * 0.7
+        total_ram = profile.ram.total_gb if profile.ram and profile.ram.total_gb > 0 else profile.ram_gb
+        avail_ram = profile.ram.available_gb if profile.ram and profile.ram.available_gb > 0 else total_ram * 0.7
         total_vram = profile.vram_gb
-        has_cuda = any(g.cuda_supported for g in profile.gpu)
+        has_cuda = any(g.cuda_supported for g in profile.gpu) if profile.gpu else False
 
         reasons: List[str] = []
         score = 100
@@ -85,7 +98,7 @@ class ModelCompatibilityEngine:
         if fits_in_vram and total_vram > 0:
             recommended_exec = "Local (GPU)"
             perf_tier = "Fast / Fluid"
-            status = "Compatible"
+            status = "SUPPORTED"
             score = 95
             reasons.append(f"Model ({estimated_mem:.1f} GB) fits entirely within your GPU VRAM ({total_vram:.1f} GB).")
             if total_vram >= estimated_mem * 1.5:
@@ -94,25 +107,25 @@ class ModelCompatibilityEngine:
             if total_vram > 2.0:
                 recommended_exec = "Hybrid (GPU + CPU)"
                 perf_tier = "Moderate / Usable"
-                status = "Compatible"
+                status = "SUPPORTED"
                 score = 80
                 reasons.append(f"Model will split layers between GPU VRAM ({total_vram:.1f} GB) and System RAM ({total_ram:.1f} GB).")
             else:
                 recommended_exec = "Local (CPU/RAM)"
                 if params_b <= 3.5:
                     perf_tier = "Fast / Fluid (Ultra-Low Latency)"
-                    status = "Recommended"
+                    status = "SUPPORTED"
                     score = 95
                     reasons.append(f"Lightweight model ({params_b}B) tailored for snappy CPU execution (<0.3s latency).")
                 elif params_b <= 8.5:
                     perf_tier = "Moderate / Balanced"
-                    status = "Compatible"
+                    status = "SUPPORTED"
                     score = 75
                     reasons.append(f"Medium model ({params_b}B) runs at ~8 tok/s on your CPU with {total_ram:.1f} GB RAM.")
                 else:
                     perf_tier = "Slow / Heavy on CPU"
-                    status = "Heavyweight (GPU Recommended)"
-                    score = 35
+                    status = "POSSIBLE"
+                    score = 40
                     reasons.append(f"Large model ({params_b}B) requires significant memory bandwidth. Discrete NVIDIA GPU recommended.")
                 recommended_quant = "Q4_K_M"
         else:
@@ -120,20 +133,21 @@ class ModelCompatibilityEngine:
             if total_ram >= min_ram_gb:
                 recommended_exec = "Local (CPU/RAM - High Quantized)"
                 perf_tier = "Slow / Heavy"
-                status = "Maybe Compatible"
+                status = "POSSIBLE"
                 score = 45
                 recommended_quant = "Q3_K_M"
                 reasons.append(f"System RAM ({total_ram:.1f} GB) is tight for {params_b}B parameters. Consider higher quantization or cloud.")
             else:
                 recommended_exec = "Cloud / Remote"
                 perf_tier = "Not Viable"
-                status = "Not Recommended"
+                status = "INCOMPATIBLE"
                 score = 20
                 reasons.append(f"Insufficient RAM ({total_ram:.1f} GB total) for local execution of this {params_b}B model.")
 
         # Storage check
         if profile.storage_free_gb > 0 and profile.storage_free_gb < (estimated_mem + 2.0):
             score = max(0, score - 25)
+            status = "NOT_RECOMMENDED" if status == "SUPPORTED" else status
             reasons.append(f"Warning: Low disk space ({profile.storage_free_gb:.1f} GB free). Model requires ~{estimated_mem:.1f} GB download.")
 
         return CompatibilityResult(
